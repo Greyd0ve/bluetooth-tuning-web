@@ -15,6 +15,10 @@ import {
   Download,
   Car,
   RotateCcw,
+  Palette,
+  HelpCircle,
+  BookOpen,
+  Paintbrush,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { motion } from 'framer-motion';
@@ -63,6 +67,41 @@ const DEFAULT_DRIVE_SETTINGS = {
   kd: 0,
   leftBias: 0,
   rightBias: 0,
+};
+
+const DEFAULT_APPEARANCE = {
+  themeName: '蓝色清爽',
+  primary: '#2563eb',
+  accent: '#16a34a',
+  danger: '#dc2626',
+  background: '#eef2f7',
+  card: '#ffffff',
+  text: '#0f172a',
+  muted: '#64748b',
+  border: '#e2e8f0',
+  input: '#ffffff',
+  radius: 20,
+  fontScale: 1,
+  density: 'comfortable',
+  shadow: 'soft',
+};
+
+const THEME_PRESETS = {
+  '蓝色清爽': {
+    primary: '#2563eb', accent: '#16a34a', danger: '#dc2626', background: '#eef2f7', card: '#ffffff', text: '#0f172a', muted: '#64748b', border: '#e2e8f0', input: '#ffffff', shadow: 'soft',
+  },
+  '深色科技': {
+    primary: '#38bdf8', accent: '#22c55e', danger: '#fb7185', background: '#020617', card: '#0f172a', text: '#e5e7eb', muted: '#94a3b8', border: '#334155', input: '#111827', shadow: 'glow',
+  },
+  '竞赛红黑': {
+    primary: '#ef4444', accent: '#f59e0b', danger: '#b91c1c', background: '#111827', card: '#1f2937', text: '#f9fafb', muted: '#d1d5db', border: '#374151', input: '#111827', shadow: 'soft',
+  },
+  '护眼绿色': {
+    primary: '#16a34a', accent: '#0f766e', danger: '#dc2626', background: '#ecfdf5', card: '#ffffff', text: '#064e3b', muted: '#047857', border: '#bbf7d0', input: '#ffffff', shadow: 'soft',
+  },
+  '简洁灰白': {
+    primary: '#475569', accent: '#2563eb', danger: '#dc2626', background: '#f8fafc', card: '#ffffff', text: '#111827', muted: '#64748b', border: '#d1d5db', input: '#ffffff', shadow: 'flat',
+  },
 };
 
 const DRIVE_FIELDS = [
@@ -165,6 +204,16 @@ function SectionTitle({ icon: Icon, title, right }) {
   return <div className="section-title"><div className="section-title-left"><Icon size={20} /><h2>{title}</h2></div>{right}</div>;
 }
 
+function ColorControl({ label, value, onChange }) {
+  return <label className="color-control">
+    <span>{label}</span>
+    <div className="color-row">
+      <input className="color-picker" type="color" value={value} onChange={(e) => onChange(e.target.value)} />
+      <input className="color-text" value={value} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  </label>;
+}
+
 function Joystick({ label, config, value, onChange, onActiveChange = () => {}, onRelease = () => {} }) {
   const ref = useRef(null);
   const pointerId = useRef(null);
@@ -261,6 +310,7 @@ function App() {
   const [joystickContinuous, setJoystickContinuous] = useState(saved.joystickContinuous ?? true);
   const [joystickConfig, setJoystickConfig] = useState({ ...DEFAULT_JOYSTICK_CONFIG, ...(saved.joystickConfig || {}) });
   const [driveSettings, setDriveSettings] = useState({ ...DEFAULT_DRIVE_SETTINGS, ...(saved.driveSettings || {}) });
+  const [appearance, setAppearance] = useState({ ...DEFAULT_APPEARANCE, ...(saved.appearance || {}) });
 
   const bluetoothRef = useRef({ device: null, server: null, writeChar: null, notifyChar: null });
   const packetTimer = useRef(0);
@@ -270,6 +320,19 @@ function App() {
   const joystickSendingRef = useRef(false);
   const rxPacketBufferRef = useRef('');
   const newlineValue = useMemo(() => newline.replace('\\r', '\r').replace('\\n', '\n'), [newline]);
+  const pageStyle = useMemo(() => ({
+    '--app-primary': appearance.primary,
+    '--app-accent': appearance.accent,
+    '--app-danger': appearance.danger,
+    '--app-bg': appearance.background,
+    '--app-card': appearance.card,
+    '--app-text': appearance.text,
+    '--app-muted': appearance.muted,
+    '--app-border': appearance.border,
+    '--app-input': appearance.input,
+    '--app-radius': `${appearance.radius}px`,
+    '--app-font-scale': Number(appearance.fontScale) || 1,
+  }), [appearance]);
 
   const updateLeftJoy = (value) => { leftJoyRef.current = value; setLeftJoy(value); };
   const updateRightJoy = (value) => { rightJoyRef.current = value; setRightJoy(value); };
@@ -302,8 +365,9 @@ function App() {
       joystickContinuous,
       joystickConfig,
       driveSettings,
+      appearance,
     });
-  }, [tab, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, loopbackMode, plotChannelSettings, buttons, sliders, joystickContinuous, joystickConfig, driveSettings]);
+  }, [tab, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, loopbackMode, plotChannelSettings, buttons, sliders, joystickContinuous, joystickConfig, driveSettings, appearance]);
 
   useEffect(() => {
     if (loopbackMode) setStatus('环回模式：无需连接蓝牙，发送内容会直接进入接收区');
@@ -513,6 +577,68 @@ function App() {
     if (field) sendPacket(['slider', field.packet, value], false);
   };
 
+
+  const updateAppearance = (patch) => setAppearance((old) => ({ ...old, ...patch }));
+  const applyThemePreset = (name) => setAppearance((old) => ({ ...old, ...THEME_PRESETS[name], themeName: name }));
+  const resetAppearance = () => setAppearance(DEFAULT_APPEARANCE);
+
+  const renderHelpAppearancePanel = () => <div className="help-layout">
+    <Card>
+      <SectionTitle icon={BookOpen} title="使用说明" />
+      <div className="help-grid">
+        <div className="help-step"><b>1. 选择模块预设</b><p>常见国产 BLE 串口模块优先试 FFE0 / FFE1；如果连接失败，再按模块资料填写自定义 UUID。</p></div>
+        <div className="help-step"><b>2. 连接蓝牙</b><p>点击右上角“连接”，在浏览器弹窗里选择你的 BLE 模块。网页需要 HTTPS 或 localhost 环境。</p></div>
+        <div className="help-step"><b>3. 串口测试</b><p>进入“串口”页面，先发送 Hello 或十六进制数据，确认电脑蓝牙到单片机串口链路正常。</p></div>
+        <div className="help-step"><b>4. 小车联调</b><p>进入“小车联调”，一边推动摇杆发送目标值，一边观察单片机回传的 [plot,...] 曲线。</p></div>
+        <div className="help-step"><b>5. 绘图回传</b><p>单片机可持续发送 [plot,当前速度,目标速度,PWM]，网页会自动绘制多条曲线。</p></div>
+        <div className="help-step"><b>6. 环回测试</b><p>没有蓝牙模块时，打开“环回测试模式”，网页发送的数据会直接进入接收区，用于测试界面和协议。</p></div>
+      </div>
+      <div className="protocol-card">
+        <h3>当前协议保持不变</h3>
+        <div className="protocol-list">
+          <code>[key,name,down/up]</code>
+          <code>[slider,name,value]</code>
+          <code>[joystick,lx,ly,rx,ry]</code>
+          <code>[plot,v1,v2,...]</code>
+          <code>[display,x,y,text,size]</code>
+          <code>[plot-clear] / [display-clear]</code>
+        </div>
+      </div>
+    </Card>
+
+    <Card>
+      <SectionTitle
+        icon={Palette}
+        title="界面颜色与风格设置"
+        right={<Button variant="secondary" onClick={resetAppearance}><RotateCcw size={16} />恢复外观默认</Button>}
+      />
+      <div className="theme-presets">
+        {Object.keys(THEME_PRESETS).map((name) => <Button key={name} variant={appearance.themeName === name ? 'primary' : 'secondary'} onClick={() => applyThemePreset(name)}>{name}</Button>)}
+      </div>
+      <div className="appearance-grid">
+        <ColorControl label="主色" value={appearance.primary} onChange={(v) => updateAppearance({ primary: v, themeName: '自定义' })} />
+        <ColorControl label="强调色" value={appearance.accent} onChange={(v) => updateAppearance({ accent: v, themeName: '自定义' })} />
+        <ColorControl label="危险色" value={appearance.danger} onChange={(v) => updateAppearance({ danger: v, themeName: '自定义' })} />
+        <ColorControl label="背景色" value={appearance.background} onChange={(v) => updateAppearance({ background: v, themeName: '自定义' })} />
+        <ColorControl label="卡片色" value={appearance.card} onChange={(v) => updateAppearance({ card: v, themeName: '自定义' })} />
+        <ColorControl label="输入框色" value={appearance.input} onChange={(v) => updateAppearance({ input: v, themeName: '自定义' })} />
+        <ColorControl label="文字色" value={appearance.text} onChange={(v) => updateAppearance({ text: v, themeName: '自定义' })} />
+        <ColorControl label="辅助文字" value={appearance.muted} onChange={(v) => updateAppearance({ muted: v, themeName: '自定义' })} />
+        <ColorControl label="边框色" value={appearance.border} onChange={(v) => updateAppearance({ border: v, themeName: '自定义' })} />
+      </div>
+      <div className="style-grid">
+        <label>圆角大小<input type="range" min="8" max="34" value={appearance.radius} onChange={(e) => updateAppearance({ radius: Number(e.target.value), themeName: '自定义' })} /><span className="range-value">{appearance.radius}px</span></label>
+        <label>字体缩放<input type="range" min="0.9" max="1.15" step="0.01" value={appearance.fontScale} onChange={(e) => updateAppearance({ fontScale: Number(e.target.value), themeName: '自定义' })} /><span className="range-value">{Math.round(appearance.fontScale * 100)}%</span></label>
+        <label>界面密度<select value={appearance.density} onChange={(e) => updateAppearance({ density: e.target.value, themeName: '自定义' })}><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="large">宽松</option></select></label>
+        <label>阴影风格<select value={appearance.shadow} onChange={(e) => updateAppearance({ shadow: e.target.value, themeName: '自定义' })}><option value="flat">扁平</option><option value="soft">柔和阴影</option><option value="glow">科技发光</option></select></label>
+      </div>
+      <div className="style-preview">
+        <div className="preview-card"><Paintbrush size={20} /><b>外观设置会自动保存</b><span>刷新网页后仍然保留；不会改变蓝牙通信协议。</span></div>
+        <Button>主按钮</Button><Button variant="secondary">次按钮</Button><Button variant="danger">危险按钮</Button>
+      </div>
+    </Card>
+  </div>;
+
   const renderPlotCard = (compact = false) => {
     const visibleKeys = plotKeys.filter((key) => getPlotSetting(key).visible !== false);
     return <Card>
@@ -618,10 +744,10 @@ function App() {
     <Button variant="secondary" onClick={() => sendRaw('[plot-clear]\r\n[display-clear]\r\n', 'text')}>清空测试</Button>
   </div>;
 
-  return <main className="page">
+  return <main className={`page density-${appearance.density} shadow-${appearance.shadow}`} style={pageStyle}>
     <div className="container">
       <motion.header initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="hero">
-        <div><h1>网页蓝牙远程调参助手 v4</h1><p>自动保存配置 · 曲线命名/隐藏 · 摇杆死区/反向 · 小车联调 · CSV 导出 · 环回测试</p></div>
+        <div><h1>网页蓝牙远程调参助手 v7</h1><p>协议不变 · 新增使用说明 · 自定义颜色/风格 · 自动保存外观设置</p></div>
         <Card className="connection"><div className="status">{status}</div><Button onClick={connectBluetooth}><Bluetooth size={16} />连接</Button><Button variant="secondary" onClick={disconnectBluetooth}><Cable size={16} />断开</Button></Card>
       </motion.header>
 
@@ -642,7 +768,7 @@ function App() {
             <Button variant="secondary" className="full-btn" onClick={clearSavedConfig}>恢复默认配置</Button>
           </Card>
           <Card className="tabs">
-            {[["serial", Cable, "串口"], ["display", Monitor, "显示屏"], ["drive", Car, "小车联调"], ["plot", Activity, "绘图"], ["buttons", SquareMousePointer, "按键"], ["sliders", SlidersHorizontal, "滑杆"], ["joystick", Gamepad2, "摇杆"]].map(([k, Icon, label]) => <Button key={k} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}><Icon size={16} />{label}</Button>)}
+            {[["serial", Cable, "串口"], ["display", Monitor, "显示屏"], ["drive", Car, "小车联调"], ["plot", Activity, "绘图"], ["buttons", SquareMousePointer, "按键"], ["sliders", SlidersHorizontal, "滑杆"], ["joystick", Gamepad2, "摇杆"], ["help", HelpCircle, "说明/外观"]].map(([k, Icon, label]) => <Button key={k} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}><Icon size={16} />{label}</Button>)}
           </Card>
         </aside>
 
@@ -663,6 +789,8 @@ function App() {
           {tab === 'sliders' && <Card><SectionTitle icon={SlidersHorizontal} title="滑杆：发送 [slider,name,value]" right={<Button variant="secondary" onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加一项</Button>} /><div className="slider-list">{sliders.map((s, idx) => <div key={idx} className="slider-editor"><div className="slider-config"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">值：{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>}
 
           {tab === 'joystick' && renderJoystickCard(false)}
+
+          {tab === 'help' && renderHelpAppearancePanel()}
         </section>
       </div>
     </div>
