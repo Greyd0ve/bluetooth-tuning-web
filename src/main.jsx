@@ -19,6 +19,9 @@ import {
   HelpCircle,
   BookOpen,
   Paintbrush,
+  Pause,
+  Play,
+  Maximize2,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { motion } from 'framer-motion';
@@ -67,6 +70,15 @@ const DEFAULT_DRIVE_SETTINGS = {
   kd: 0,
   leftBias: 0,
   rightBias: 0,
+};
+
+const DEFAULT_PLOT_SETTINGS = {
+  paused: false,
+  autoScroll: true,
+  maxPoints: 300,
+  yAxisMode: 'auto',
+  yMin: -120,
+  yMax: 120,
 };
 
 const DEFAULT_APPEARANCE = {
@@ -200,6 +212,22 @@ function csvEscape(value) {
   return s;
 }
 
+function formatNumber(value, digits = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return Number.isInteger(n) ? String(n) : n.toFixed(digits);
+}
+
+function calcStats(rows, key) {
+  const values = rows.map((row) => Number(row[key])).filter(Number.isFinite);
+  if (!values.length) return { latest: '-', max: '-', min: '-', avg: '-' };
+  const latestRaw = values[values.length - 1];
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
+  return { latest: formatNumber(latestRaw), max: formatNumber(max), min: formatNumber(min), avg: formatNumber(avg) };
+}
+
 function SectionTitle({ icon: Icon, title, right }) {
   return <div className="section-title"><div className="section-title-left"><Icon size={20} /><h2>{title}</h2></div>{right}</div>;
 }
@@ -295,6 +323,13 @@ function App() {
     CH2: { name: '目标速度', visible: true },
     CH3: { name: 'PWM输出', visible: true },
   });
+  const [plotPaused, setPlotPaused] = useState(saved.plotPaused ?? DEFAULT_PLOT_SETTINGS.paused);
+  const [plotAutoScroll, setPlotAutoScroll] = useState(saved.plotAutoScroll ?? DEFAULT_PLOT_SETTINGS.autoScroll);
+  const [plotMaxPoints, setPlotMaxPoints] = useState(saved.plotMaxPoints ?? DEFAULT_PLOT_SETTINGS.maxPoints);
+  const [plotYAxisMode, setPlotYAxisMode] = useState(saved.plotYAxisMode || DEFAULT_PLOT_SETTINGS.yAxisMode);
+  const [plotYMin, setPlotYMin] = useState(saved.plotYMin ?? DEFAULT_PLOT_SETTINGS.yMin);
+  const [plotYMax, setPlotYMax] = useState(saved.plotYMax ?? DEFAULT_PLOT_SETTINGS.yMax);
+  const [pausedPlotPackets, setPausedPlotPackets] = useState(0);
   const [buttons, setButtons] = useState(saved.buttons || [
     { name: '1', lock: false, state: false },
     { name: '2', lock: false, state: false },
@@ -319,6 +354,8 @@ function App() {
   const rightJoyRef = useRef(rightJoy);
   const joystickSendingRef = useRef(false);
   const rxPacketBufferRef = useRef('');
+  const plotStartTimeRef = useRef(null);
+  const plotPausedRef = useRef(plotPaused);
   const newlineValue = useMemo(() => newline.replace('\\r', '\r').replace('\\n', '\n'), [newline]);
   const pageStyle = useMemo(() => ({
     '--app-primary': appearance.primary,
@@ -360,6 +397,12 @@ function App() {
       txText,
       loopbackMode,
       plotChannelSettings,
+      plotPaused,
+      plotAutoScroll,
+      plotMaxPoints,
+      plotYAxisMode,
+      plotYMin,
+      plotYMax,
       buttons,
       sliders,
       joystickContinuous,
@@ -367,7 +410,11 @@ function App() {
       driveSettings,
       appearance,
     });
-  }, [tab, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, loopbackMode, plotChannelSettings, buttons, sliders, joystickContinuous, joystickConfig, driveSettings, appearance]);
+  }, [tab, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, loopbackMode, plotChannelSettings, plotPaused, plotAutoScroll, plotMaxPoints, plotYAxisMode, plotYMin, plotYMax, buttons, sliders, joystickContinuous, joystickConfig, driveSettings, appearance]);
+
+  useEffect(() => {
+    plotPausedRef.current = plotPaused;
+  }, [plotPaused]);
 
   useEffect(() => {
     if (loopbackMode) setStatus('环回模式：无需连接蓝牙，发送内容会直接进入接收区');
@@ -396,12 +443,21 @@ function App() {
     } else if (cmd === 'plot' || cmd === 'p') {
       const values = parts.slice(1, 11).map(Number).filter(Number.isFinite);
       if (values.length) {
-        const row = { idx: plotIndex.current++ };
+        if (plotPausedRef.current) {
+          setPausedPlotPackets((old) => old + 1);
+          return;
+        }
+        const now = Date.now();
+        if (!plotStartTimeRef.current) plotStartTimeRef.current = now;
+        const timeMs = now - plotStartTimeRef.current;
+        const row = { idx: plotIndex.current++, timeMs, timeS: Number((timeMs / 1000).toFixed(3)), timeIso: new Date(now).toISOString() };
         values.forEach((v, i) => { row[`CH${i + 1}`] = v; });
-        setPlotData((old) => [...old, row].slice(-1000));
+        setPlotData((old) => [...old, row].slice(-20000));
       }
     } else if (cmd === 'plot-clear' || cmd === 'p-c') {
       plotIndex.current = 0;
+      plotStartTimeRef.current = null;
+      setPausedPlotPackets(0);
       setPlotData([]);
     }
   };
@@ -545,8 +601,13 @@ function App() {
       appendTx('CSV 导出失败：当前没有绘图数据');
       return;
     }
-    const headers = ['idx', ...plotKeys.map((key) => getPlotSetting(key).name || key)];
-    const rows = plotData.map((row) => [row.idx, ...plotKeys.map((key) => row[key] ?? '')]);
+    const headers = ['time_iso', 'time_ms', 'time_s', ...plotKeys.map((key) => getPlotSetting(key).name || key)];
+    const rows = plotData.map((row) => [
+      row.timeIso || '',
+      row.timeMs ?? '',
+      row.timeS ?? '',
+      ...plotKeys.map((key) => row[key] ?? ''),
+    ]);
     const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(',')).join('\r\n');
     const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -557,7 +618,28 @@ function App() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    appendTx('CSV 已导出');
+    appendTx('CSV 已导出：包含时间戳、时间轴和曲线名称');
+  };
+
+  const applySpeedPlotTemplate = () => {
+    setPlotChannelSettings((old) => ({
+      ...old,
+      CH1: { ...(old.CH1 || {}), name: '当前速度', visible: true },
+      CH2: { ...(old.CH2 || {}), name: '目标速度', visible: true },
+      CH3: { ...(old.CH3 || {}), name: 'PWM输出', visible: true },
+      CH4: { ...(old.CH4 || {}), name: '速度误差', visible: true },
+    }));
+    setPlotAutoScroll(true);
+    setPlotYAxisMode('auto');
+    setPlotMaxPoints(300);
+    appendTx('已应用速度闭环绘图模板：CH1 当前速度，CH2 目标速度，CH3 PWM输出，CH4 速度误差');
+  };
+
+  const clearPlotData = () => {
+    plotIndex.current = 0;
+    plotStartTimeRef.current = null;
+    setPausedPlotPackets(0);
+    setPlotData([]);
   };
 
   const clearSavedConfig = () => {
@@ -590,7 +672,7 @@ function App() {
         <div className="help-step"><b>2. 连接蓝牙</b><p>点击右上角“连接”，在浏览器弹窗里选择你的 BLE 模块。网页需要 HTTPS 或 localhost 环境。</p></div>
         <div className="help-step"><b>3. 串口测试</b><p>进入“串口”页面，先发送 Hello 或十六进制数据，确认电脑蓝牙到单片机串口链路正常。</p></div>
         <div className="help-step"><b>4. 小车联调</b><p>进入“小车联调”，一边推动摇杆发送目标值，一边观察单片机回传的 [plot,...] 曲线。</p></div>
-        <div className="help-step"><b>5. 绘图回传</b><p>单片机可持续发送 [plot,当前速度,目标速度,PWM]，网页会自动绘制多条曲线。</p></div>
+        <div className="help-step"><b>5. 绘图回传</b><p>单片机可持续发送 [plot,当前速度,目标速度,PWM]，网页会按真实时间轴绘制曲线，并显示最新/最大/最小/平均值。</p></div>
         <div className="help-step"><b>6. 环回测试</b><p>没有蓝牙模块时，打开“环回测试模式”，网页发送的数据会直接进入接收区，用于测试界面和协议。</p></div>
       </div>
       <div className="protocol-card">
@@ -641,19 +723,49 @@ function App() {
 
   const renderPlotCard = (compact = false) => {
     const visibleKeys = plotKeys.filter((key) => getPlotSetting(key).visible !== false);
+    const safeMaxPoints = Math.max(20, Number(plotMaxPoints) || DEFAULT_PLOT_SETTINGS.maxPoints);
+    const displayData = plotAutoScroll ? plotData.slice(-safeMaxPoints) : plotData;
+    const yMin = Number(plotYMin);
+    const yMax = Number(plotYMax);
+    const fixedYAxisValid = plotYAxisMode === 'fixed' && Number.isFinite(yMin) && Number.isFinite(yMax) && yMin < yMax;
+    const yAxisProps = fixedYAxisValid ? { domain: [yMin, yMax] } : {};
+    const lastTime = plotData.length ? `${formatNumber(plotData[plotData.length - 1].timeS, 3)}s` : '-';
+
     return <Card>
       <SectionTitle
         icon={Activity}
         title={compact ? '速度反馈绘图：[plot,v1,v2,...]' : '绘图：接收 [plot,v1,v2,...] / [plot-clear]'}
-        right={<div className="row"><Button variant="secondary" onClick={exportCsv}><Download size={16} />导出 CSV</Button><Button variant="secondary" onClick={() => { plotIndex.current = 0; setPlotData([]); }}><Trash2 size={16} />清空</Button></div>}
+        right={<div className="row">
+          <span className={`send-badge ${plotPaused ? '' : 'active'}`}>{plotPaused ? `已暂停${pausedPlotPackets ? ` · 忽略 ${pausedPlotPackets} 包` : ''}` : '实时绘图中'}</span>
+          <Button variant="secondary" onClick={() => setPlotPaused((v) => !v)}>{plotPaused ? <Play size={16} /> : <Pause size={16} />}{plotPaused ? '继续' : '暂停'}</Button>
+          <Button variant="secondary" onClick={exportCsv}><Download size={16} />导出 CSV</Button>
+          <Button variant="secondary" onClick={clearPlotData}><Trash2 size={16} />清空</Button>
+        </div>}
       />
+      <div className={`plot-control-panel ${compact ? 'compact' : ''}`}>
+        <label className="check"><input type="checkbox" checked={plotAutoScroll} onChange={(e) => setPlotAutoScroll(e.target.checked)} />自动滚动</label>
+        <label>显示点数<input type="number" min="20" max="5000" value={plotMaxPoints} onChange={(e) => setPlotMaxPoints(Number(e.target.value))} /></label>
+        <label>Y 轴模式<select value={plotYAxisMode} onChange={(e) => setPlotYAxisMode(e.target.value)}><option value="auto">自动缩放</option><option value="fixed">固定范围</option></select></label>
+        <label>Y 最小值<input type="number" disabled={plotYAxisMode !== 'fixed'} value={plotYMin} onChange={(e) => setPlotYMin(Number(e.target.value))} /></label>
+        <label>Y 最大值<input type="number" disabled={plotYAxisMode !== 'fixed'} value={plotYMax} onChange={(e) => setPlotYMax(Number(e.target.value))} /></label>
+        <Button variant="secondary" onClick={applySpeedPlotTemplate}><Maximize2 size={16} />速度闭环模板</Button>
+        <span className="plot-meta">数据点：{plotData.length} · 当前时间：{lastTime}</span>
+      </div>
       <div className={`plot-box ${compact ? 'compact' : ''}`}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={plotData}>
+          <LineChart data={displayData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="idx" />
-            <YAxis />
-            <Tooltip />
+            <XAxis
+              dataKey="timeS"
+              type="number"
+              tickFormatter={(value) => `${formatNumber(value, 1)}s`}
+              label={compact ? undefined : { value: '时间 / s', position: 'insideBottomRight', offset: -4 }}
+            />
+            <YAxis {...yAxisProps} />
+            <Tooltip
+              labelFormatter={(value) => `时间：${formatNumber(value, 3)} s`}
+              formatter={(value, name) => [formatNumber(value), name]}
+            />
             <Legend />
             {visibleKeys.map((key) => {
               const index = plotKeys.indexOf(key);
@@ -673,14 +785,22 @@ function App() {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      {plotKeys.length > 0 && <div className="plot-channel-panel">
+      {plotKeys.length > 0 && <div className="plot-channel-panel enhanced">
         {plotKeys.map((key, index) => {
           const setting = getPlotSetting(key);
-          return <div className="plot-channel-row" key={key}>
-            <span className="plot-color-chip"><i style={{ backgroundColor: PLOT_COLORS[index % PLOT_COLORS.length] }} />{key}</span>
-            <input value={setting.name || ''} onChange={(e) => updatePlotSetting(key, { name: e.target.value })} placeholder={key} />
-            <label className="check inline"><input type="checkbox" checked={setting.visible !== false} onChange={(e) => updatePlotSetting(key, { visible: e.target.checked })} />显示</label>
-            <span className="value-box small">当前：{plotData.length ? plotData[plotData.length - 1][key] ?? '-' : '-'}</span>
+          const stats = calcStats(plotData, key);
+          return <div className="plot-channel-row enhanced" key={key}>
+            <div className="plot-channel-main">
+              <span className="plot-color-chip"><i style={{ backgroundColor: PLOT_COLORS[index % PLOT_COLORS.length] }} />{key}</span>
+              <input value={setting.name || ''} onChange={(e) => updatePlotSetting(key, { name: e.target.value })} placeholder={key} />
+              <label className="check inline"><input type="checkbox" checked={setting.visible !== false} onChange={(e) => updatePlotSetting(key, { visible: e.target.checked })} />显示</label>
+            </div>
+            <div className="plot-stat-grid">
+              <span>最新<b>{stats.latest}</b></span>
+              <span>最大<b>{stats.max}</b></span>
+              <span>最小<b>{stats.min}</b></span>
+              <span>平均<b>{stats.avg}</b></span>
+            </div>
           </div>;
         })}
       </div>}
@@ -747,7 +867,7 @@ function App() {
   return <main className={`page density-${appearance.density} shadow-${appearance.shadow}`} style={pageStyle}>
     <div className="container">
       <motion.header initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="hero">
-        <div><h1>网页蓝牙远程调参助手 v7</h1><p>协议不变 · 新增使用说明 · 自定义颜色/风格 · 自动保存外观设置</p></div>
+        <div><h1>网页蓝牙远程调参助手 v8</h1><p>协议不变 · 绘图增强 · 时间轴/统计/Y轴控制/CSV 时间戳 · 自定义外观</p></div>
         <Card className="connection"><div className="status">{status}</div><Button onClick={connectBluetooth}><Bluetooth size={16} />连接</Button><Button variant="secondary" onClick={disconnectBluetooth}><Cable size={16} />断开</Button></Card>
       </motion.header>
 

@@ -137,3 +137,84 @@ input[type="checkbox"] { accent-color: var(--app-primary, #2563eb); }
   .slider-config, .plot-channel-row { grid-template-columns: 1fr; }
   .status { min-width: 0; width: 100%; }
 }
+
+/* v8 绘图增强 */
+.plot-control-panel {
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: auto 120px 140px 120px 120px auto minmax(180px, 1fr);
+  gap: 10px;
+  align-items: end;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: calc(var(--app-radius, 20px) * 0.8);
+  padding: 12px;
+  background: color-mix(in srgb, var(--app-card, #fff) 82%, var(--app-bg, #eef2f7));
+}
+.plot-control-panel.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.plot-control-panel label {
+  margin: 0;
+}
+.plot-control-panel .check {
+  align-self: center;
+  margin-top: 19px;
+}
+.plot-control-panel button {
+  align-self: center;
+  margin-top: 19px;
+}
+.plot-meta {
+  align-self: center;
+  justify-self: end;
+  color: var(--app-muted, #64748b);
+  font-size: 13px;
+  font-weight: 750;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 999px;
+  padding: 8px 11px;
+  background: var(--app-input, #fff);
+}
+.plot-channel-panel.enhanced {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.plot-channel-row.enhanced {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.plot-channel-main {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 68px;
+  align-items: center;
+  gap: 8px;
+}
+.plot-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+.plot-stat-grid span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: calc(var(--app-radius, 20px) * 0.55);
+  background: var(--app-input, #fff);
+  padding: 7px 8px;
+  color: var(--app-muted, #64748b);
+  font-size: 12px;
+}
+.plot-stat-grid b {
+  color: var(--app-text, #0f172a);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1180px) {
+  .plot-control-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .plot-meta { justify-self: stretch; text-align: center; }
+}
+@media (max-width: 820px) {
+  .plot-control-panel, .plot-control-panel.compact, .plot-channel-panel.enhanced, .plot-channel-main, .plot-stat-grid { grid-template-columns: 1fr; }
+}
