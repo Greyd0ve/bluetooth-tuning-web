@@ -386,6 +386,7 @@ function App() {
   const [keyboardVector, setKeyboardVector] = useState({ x: 0, y: 0, active: false });
   const [recording, setRecording] = useState(false);
   const [recordName, setRecordName] = useState('速度阶跃测试');
+  const [settingsExpanded, setSettingsExpanded] = useState(false);
 
   const bluetoothRef = useRef({ device: null, server: null, writeChar: null, notifyChar: null });
   const serialRef = useRef({ port: null, reader: null, writer: null, keepReading: false });
@@ -881,17 +882,39 @@ function App() {
 
   const renderStatus = () => (
     <Card className="connection">
-      <div className={`status ${connected ? 'ok' : 'bad'}`}>{status}</div>
+      <div className={`status ${connected ? 'ok' : 'bad'}`}>
+        <span className="status-dot" />
+        <span>{status}</span>
+      </div>
       <div className="status-meta">设备：{deviceName || '未选择'} · 方式：{loopback ? '环回' : transport === 'serial' ? 'Web Serial' : transport === 'bridge' ? '本地桥' : 'BLE'} · 时长：{formatDuration(connectedAt ? now - connectedAt : 0)}</div>
-      <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
-      <Button onClick={disconnect}><Cable size={16} />断开</Button>
-      <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
+      <div className="connection-actions">
+        <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
+        <Button onClick={disconnect}><Cable size={16} />断开</Button>
+        <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
+      </div>
     </Card>
   );
 
+  const renderDashboard = () => {
+    const latest = plotData[plotData.length - 1] || {};
+    return (
+      <section className="dashboard-strip" aria-label="手持调参状态栏">
+        <div className="dash-card accent"><span>连接</span><b>{connected ? '在线' : '离线'}</b><em>{transport === 'serial' ? `${serialSettings.baudRate} bps` : transport === 'bridge' ? '本地桥' : 'BLE'}</em></div>
+        <div className="dash-card"><span>曲线点数</span><b>{plotData.length}</b><em>{plotSettings.paused ? '已暂停' : `显示 ${visibleRows.length}`}</em></div>
+        <div className="dash-card"><span>目标 / 实际</span><b>{pid.targetSpeed}</b><em>{latest.CH1 != null ? `实际 ${Number(latest.CH1).toFixed(2)}` : '等待 [plot,...]'}</em></div>
+        <div className="dash-card danger"><span>安全</span><b>SPACE 急停</b><em>右上角常驻</em></div>
+      </section>
+    );
+  };
+
   const renderSettings = () => (
-    <Card>
-      <SectionTitle icon={Settings} title="连接与通用设置" />
+    <Card className={`settings-panel ${settingsExpanded ? 'is-open' : ''}`}>
+      <SectionTitle icon={Settings} title="连接与通用设置" right={<Button onClick={() => setSettingsExpanded((v) => !v)}>{settingsExpanded ? '收起' : '展开'}</Button>} />
+      <div className="settings-summary">
+        <span>{transport === 'serial' ? 'USB-TTL 串口' : transport === 'bridge' ? 'Orange Pi 本地桥' : 'BLE 蓝牙'}</span>
+        <b>{loopback ? '环回测试' : connected ? '已连接' : '未连接'}</b>
+      </div>
+      <div className="settings-body">
       <div className="grid2">
         <label>连接方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="serial">Web Serial / USB-TTL</option><option value="bridge">Orange Pi 本地桥</option><option value="ble">BLE 蓝牙</option></select></label>
         <label className="check with-title"><span>环回测试</span><input type="checkbox" checked={loopback} onChange={(e) => setLoopback(e.target.checked)} /></label>
@@ -930,23 +953,24 @@ function App() {
       <MiniInput label="接收缓存 ch" type="number" value={cacheSize} onChange={setCacheSize} />
       <label className="check"><input type="checkbox" checked={packetNewline} onChange={(e) => setPacketNewline(e.target.checked)} />数据包末尾加换行</label>
       <label className="check"><input type="checkbox" checked={shortPacket} onChange={(e) => setShortPacket(e.target.checked)} />数据包使用短格式</label>
+      </div>
     </Card>
   );
 
   const renderTabs = () => (
     <Card className="nav-card">
       {[
-        ['serial', Cable, '串口'], ['drive', Car, '小车联调'], ['remote', Gamepad2, '全屏驾驶'], ['plot', Activity, '绘图'],
-        ['display', Monitor, '显示屏'], ['buttons', SquareMousePointer, '按键'], ['sliders', SlidersHorizontal, '滑杆'],
-        ['records', Save, '记录回放'], ['theme', Palette, '说明/外观'], ['config', FileDown, '配置'],
-      ].map(([k, Icon, label]) => <Button key={k} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}><Icon size={16} />{label}</Button>)}
+        ['drive', Car, '联调'], ['plot', Activity, '曲线'], ['serial', Cable, '串口'], ['remote', Gamepad2, '驾驶'],
+        ['display', Monitor, '显示'], ['buttons', SquareMousePointer, '按键'], ['sliders', SlidersHorizontal, '滑杆'],
+        ['records', Save, '记录'], ['theme', Palette, '外观'], ['config', FileDown, '配置'],
+      ].map(([k, Icon, label]) => <Button key={k} className={tab === k ? 'is-active' : ''} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}><Icon size={16} />{label}</Button>)}
     </Card>
   );
 
   const renderSerial = () => (
-    <div className="two-cols">
-      <Card><SectionTitle icon={Cable} title="接收区" right={<div className="row"><Button onClick={() => setRxMode(rxMode === 'text' ? 'hex' : 'text')}>{rxMode}</Button><Button onClick={() => setRxLog('')}><Trash2 size={16} /></Button></div>} /><textarea className="big-text" value={rxLog} readOnly /></Card>
-      <Card><SectionTitle icon={Send} title="发送区" right={<Button onClick={() => setTxMode(txMode === 'text' ? 'hex' : 'text')}>{txMode}</Button>} /><textarea className="small-text" value={txText} onChange={(e) => setTxText(e.target.value)} /><div className="row mt"><Button variant="primary" onClick={() => sendRaw(txMode === 'text' ? txText + newlineValue : txText)}><Send size={16} />发送</Button><Button onClick={() => setTxLog('')}><Trash2 size={16} />清记录</Button></div><pre className="log">{txLog}</pre></Card>
+    <div className="serial-layout">
+      <Card className="rx-card"><SectionTitle icon={Cable} title="接收区" right={<div className="row"><Button onClick={() => setRxMode(rxMode === 'text' ? 'hex' : 'text')}>{rxMode}</Button><Button onClick={() => setRxLog('')}><Trash2 size={16} /></Button></div>} /><textarea className="big-text" value={rxLog} readOnly /></Card>
+      <Card className="tx-card"><SectionTitle icon={Send} title="发送区" right={<Button onClick={() => setTxMode(txMode === 'text' ? 'hex' : 'text')}>{txMode}</Button>} /><textarea className="small-text" value={txText} onChange={(e) => setTxText(e.target.value)} /><div className="row mt"><Button variant="primary" onClick={() => sendRaw(txMode === 'text' ? txText + newlineValue : txText)}><Send size={16} />发送</Button><Button onClick={() => setTxLog('')}><Trash2 size={16} />清记录</Button></div><pre className="log">{txLog}</pre></Card>
     </div>
   );
 
@@ -1005,9 +1029,9 @@ function App() {
 
   const renderDrive = (remote = false) => (
     <div className={remote ? 'remote-layout' : 'drive-split'}>
-      <div className="stack">
+      <div className="stack drive-control-column">
         {!remote && renderPidPanel()}
-        <Card><SectionTitle icon={Gamepad2} title="摇杆控制" right={<Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>} />
+        <Card className="joystick-card"><SectionTitle icon={Gamepad2} title="摇杆控制" right={<Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>} />
           <div className="joy-grid"><Joystick label="左摇杆 / WASD" value={keyboardVector.active ? { x: keyboardVector.x, y: keyboardVector.y } : leftJoy} config={joystickConfig} onChange={setLeftJoy} onActiveChange={setJoyActive} large={remote} /><Joystick label="右摇杆" value={rightJoy} config={joystickConfig} onChange={setRightJoy} onActiveChange={setJoyActive} large={remote} /></div>
           {!remote && <div className="grid3 mt"><MiniInput label="横向最大值" type="number" value={joystickConfig.maxX} onChange={(v) => setJoystickConfig({ ...joystickConfig, maxX: v })} /><MiniInput label="纵向最大值" type="number" value={joystickConfig.maxY} onChange={(v) => setJoystickConfig({ ...joystickConfig, maxY: v })} /><MiniInput label="死区" type="number" value={joystickConfig.deadzone} onChange={(v) => setJoystickConfig({ ...joystickConfig, deadzone: v })} /><MiniInput label="横向步距" type="number" value={joystickConfig.stepX} onChange={(v) => setJoystickConfig({ ...joystickConfig, stepX: v })} /><MiniInput label="纵向步距" type="number" value={joystickConfig.stepY} onChange={(v) => setJoystickConfig({ ...joystickConfig, stepY: v })} /><label>形状<select value={joystickConfig.shape} onChange={(e) => setJoystickConfig({ ...joystickConfig, shape: e.target.value })}><option value="square">方形</option><option value="circle">圆形</option></select></label><label className="check"><input type="checkbox" checked={joystickConfig.invertX} onChange={(e) => setJoystickConfig({ ...joystickConfig, invertX: e.target.checked })} />横向反向</label><label className="check"><input type="checkbox" checked={joystickConfig.invertY} onChange={(e) => setJoystickConfig({ ...joystickConfig, invertY: e.target.checked })} />纵向反向</label></div>}
         </Card>
@@ -1044,7 +1068,8 @@ function App() {
     <Button className="sticky-emergency" variant="danger" onClick={emergencyStop}><AlertTriangle size={18} />急停 SPACE</Button>
     <div className="container">
       <header className="hero"><div><h1>手持 PID 调参终端</h1><p>Orange Pi · Web Serial · 本地串口桥 · BLE 调参 · 小车联调 · 实时绘图</p></div>{renderStatus()}</header>
-      <div className="layout"><aside className="sidebar">{renderSettings()}{renderTabs()}</aside><main className="content">{content}</main></div>
+      {renderDashboard()}
+      <div className="layout"><aside className="sidebar">{renderTabs()}{renderSettings()}</aside><main className="content">{content}</main></div>
     </div>
   </div>;
 }
