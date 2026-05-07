@@ -57,21 +57,85 @@ export function splitPacketContent(content) {
       buf += ch;
     }
   }
+  if (escape) buf += '\\';
   result.push(buf);
   return result.map((s) => s.trim());
 }
 
+export function escapePacketField(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]');
+}
+
 export function makePacket(parts, shortMode = false) {
   const mapped = shortMode ? parts.map((p) => SHORT_MAP[p] || p) : parts;
-  return `[${mapped.join(',')}]`;
+  return `[${mapped.map(escapePacketField).join(',')}]`;
+}
+
+/**
+ * 从流式文本中提取完整的 [a,b,c] 数据包。
+ * 相比正则匹配，这个状态机能处理串口/BLE 的分包、粘包，以及文本中的 \[、\] 转义。
+ * 返回 rest，调用者应保存到下一次接收时继续拼接。
+ */
+export function extractPacketsFromStream(text, carry = '', maxCarry = 8192) {
+  const data = `${carry || ''}${text || ''}`;
+  const packets = [];
+  let inPacket = false;
+  let escaped = false;
+  let start = -1;
+  let content = '';
+
+  for (let i = 0; i < data.length; i += 1) {
+    const ch = data[i];
+    if (!inPacket) {
+      if (ch === '[') {
+        inPacket = true;
+        escaped = false;
+        start = i;
+        content = '';
+      }
+      continue;
+    }
+
+    if (escaped) {
+      content += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === ']') {
+      packets.push(splitPacketContent(content));
+      inPacket = false;
+      escaped = false;
+      start = -1;
+      content = '';
+      continue;
+    }
+    if (ch === '[') {
+      // 遇到未转义的新包头，说明前一个包大概率损坏，直接以新的包头重新同步。
+      start = i;
+      content = '';
+      escaped = false;
+      continue;
+    }
+    content += ch;
+  }
+
+  let rest = '';
+  let overflow = false;
+  if (inPacket && start >= 0) rest = data.slice(start);
+  if (rest.length > maxCarry) {
+    rest = '';
+    overflow = true;
+  }
+  return { packets, rest, overflow };
 }
 
 export function parsePacketsFromText(text) {
-  const packets = [];
-  const regex = /\[([^\[\]]*)\]/g;
-  let match;
-  while ((match = regex.exec(String(text || '')))) {
-    packets.push(splitPacketContent(match[1]));
-  }
-  return packets;
+  return extractPacketsFromStream(text, '', Number.MAX_SAFE_INTEGER).packets;
 }

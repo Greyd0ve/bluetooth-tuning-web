@@ -39,13 +39,13 @@ import {
   hexToBytes,
   makePacket,
   normalizeUuid,
-  parsePacketsFromText,
+  extractPacketsFromStream,
   textToBytes,
 } from './utils/protocol.js';
 import { downloadTextFile, exportPlotCsv } from './utils/csv.js';
 import { loadJson, saveJson } from './utils/storage.js';
 
-const CONFIG_KEY = 'bluetooth_tuning_web_config_v9';
+const CONFIG_KEY = 'bluetooth_tuning_web_config_v10';
 const RECORD_KEY = 'bluetooth_tuning_web_records_v9';
 
 const PRESETS = {
@@ -127,6 +127,21 @@ const DEFAULT_PID = {
   stepLarge: 10,
 };
 
+const DEFAULT_SERIAL = {
+  baudRate: 115200,
+  dataBits: 8,
+  stopBits: 1,
+  parity: 'none',
+  flowControl: 'none',
+  useRememberedPort: true,
+  packetBufferSize: 8192,
+};
+
+const DEFAULT_BRIDGE = {
+  url: 'ws://127.0.0.1:8765/ws',
+  note: 'Orange Pi 本地串口桥，适合开机自启动和免浏览器串口弹窗',
+};
+
 const DEFAULT_THEME = {
   ...THEME_PRESETS.blue.values,
   radius: 20,
@@ -136,7 +151,7 @@ const DEFAULT_THEME = {
 };
 
 const DEFAULT_CONFIG = {
-  transport: 'ble',
+  transport: 'serial',
   autoReconnect: true,
   preset: 'ffe0',
   uuids: PRESETS.ffe0,
@@ -171,6 +186,8 @@ const DEFAULT_CONFIG = {
   ],
   pid: DEFAULT_PID,
   pidGroups: [],
+  serial: DEFAULT_SERIAL,
+  bridge: DEFAULT_BRIDGE,
 };
 
 function applyDeadzone(value, deadzone) {
@@ -349,8 +366,10 @@ function App() {
   const [theme, setTheme] = useState(saved.theme);
   const [buttons, setButtons] = useState(saved.buttons);
   const [sliders, setSliders] = useState(saved.sliders);
-  const [pid, setPid] = useState(saved.pid);
+  const [pid, setPid] = useState({ ...DEFAULT_PID, ...(saved.pid || {}) });
   const [pidGroups, setPidGroups] = useState(saved.pidGroups || []);
+  const [serialSettings, setSerialSettings] = useState({ ...DEFAULT_SERIAL, ...(saved.serial || {}) });
+  const [bridgeSettings, setBridgeSettings] = useState({ ...DEFAULT_BRIDGE, ...(saved.bridge || {}) });
   const [records, setRecords] = useState(() => loadJson(RECORD_KEY, { records: [] }).records || []);
 
   const [status, setStatus] = useState('未连接');
@@ -370,6 +389,8 @@ function App() {
 
   const bluetoothRef = useRef({ device: null, server: null, writeChar: null, notifyChar: null });
   const serialRef = useRef({ port: null, reader: null, writer: null, keepReading: false });
+  const bridgeRef = useRef({ ws: null });
+  const rxPacketBuffer = useRef('');
   const intentionallyDisconnected = useRef(false);
   const plotStart = useRef(Date.now());
   const packetTimer = useRef(0);
@@ -402,7 +423,7 @@ function App() {
   };
 
   const newlineValue = useMemo(() => newline.replace('\\r', '\r').replace('\\n', '\n'), [newline]);
-  const connected = status.startsWith('已连接') || status.startsWith('串口已连接') || loopback;
+  const connected = status.startsWith('已连接') || status.startsWith('串口已连接') || status.startsWith('本地桥已连接') || loopback;
 
   useEffect(() => {
     if (preset !== 'custom') setUuids(PRESETS[preset]);
@@ -413,9 +434,9 @@ function App() {
       transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket,
       sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback,
       joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme,
-      buttons, sliders, pid, pidGroups,
+      buttons, sliders, pid, pidGroups, serial: serialSettings, bridge: bridgeSettings,
     });
-  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups]);
+  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups, serialSettings, bridgeSettings]);
 
   useEffect(() => { saveJson(RECORD_KEY, { records }); }, [records]);
 
@@ -444,8 +465,8 @@ function App() {
     });
   };
 
-  const parsePackets = (text) => {
-    for (const parts of parsePacketsFromText(text)) {
+  const handlePackets = (packets) => {
+    for (const parts of packets) {
       const cmd = (parts[0] || '').toLowerCase();
       if (cmd === 'display' || cmd === 'd') {
         const x = Number(parts[1] || 0);
@@ -474,6 +495,13 @@ function App() {
         }
       }
     }
+  };
+
+  const parsePackets = (text) => {
+    const { packets, rest, overflow } = extractPacketsFromStream(text, rxPacketBuffer.current, Number(serialSettings.packetBufferSize) || 8192);
+    rxPacketBuffer.current = rest;
+    if (overflow) appendTx('接收协议缓存过长，已自动清空不完整数据包');
+    handlePackets(packets);
   };
 
   const onNotify = (event) => {
@@ -534,13 +562,26 @@ function App() {
     try {
       setTransport('serial');
       intentionallyDisconnected.current = false;
-      const port = await navigator.serial.requestPort();
-      await port.open({ baudRate: 115200 });
+      rxPacketBuffer.current = '';
+      let port = null;
+      if (serialSettings.useRememberedPort && navigator.serial.getPorts) {
+        const ports = await navigator.serial.getPorts();
+        port = ports?.[0] || null;
+      }
+      if (!port) port = await navigator.serial.requestPort();
+      const options = {
+        baudRate: Number(serialSettings.baudRate) || 115200,
+        dataBits: Number(serialSettings.dataBits) || 8,
+        stopBits: Number(serialSettings.stopBits) || 1,
+        parity: serialSettings.parity || 'none',
+        flowControl: serialSettings.flowControl || 'none',
+      };
+      await port.open(options);
       const writer = port.writable.getWriter();
       serialRef.current = { port, writer, reader: null, keepReading: true };
       setDeviceName('Web Serial 设备');
       setConnectedAt(Date.now());
-      setStatus('串口已连接：115200');
+      setStatus(`串口已连接：${options.baudRate}bps / ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`);
       readSerialLoop(port);
     } catch (err) {
       setStatus(`串口连接失败：${err.message}`);
@@ -569,6 +610,60 @@ function App() {
     }
   };
 
+  const connectBridge = async () => {
+    try {
+      setTransport('bridge');
+      intentionallyDisconnected.current = false;
+      rxPacketBuffer.current = '';
+      setStatus('正在连接本地串口桥...');
+      const ws = new WebSocket(bridgeSettings.url || DEFAULT_BRIDGE.url);
+      ws.binaryType = 'arraybuffer';
+      bridgeRef.current.ws = ws;
+      ws.onopen = () => {
+        setDeviceName('Orange Pi 本地串口桥');
+        setConnectedAt(Date.now());
+        setStatus('本地桥已连接');
+      };
+      ws.onmessage = async (event) => {
+        let rawText = '';
+        let bytes = null;
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'rx') {
+              rawText = msg.text || '';
+              if (msg.hex) appendRx(rxModeRef.current === 'hex' ? `${msg.hex} ` : rawText);
+            } else if (msg.type === 'status') {
+              appendTx(`本地桥：${msg.message}`);
+              return;
+            }
+          } catch {
+            rawText = event.data;
+            appendRx(rawText);
+          }
+        } else if (event.data instanceof Blob) {
+          bytes = new Uint8Array(await event.data.arrayBuffer());
+          rawText = bytesToText(bytes, encodingRef.current);
+          appendRx(rxModeRef.current === 'hex' ? `${bytesToHex(bytes)} ` : rawText);
+        } else {
+          bytes = new Uint8Array(event.data);
+          rawText = bytesToText(bytes, encodingRef.current);
+          appendRx(rxModeRef.current === 'hex' ? `${bytesToHex(bytes)} ` : rawText);
+        }
+        if (rawText) parsePackets(rawText);
+      };
+      ws.onclose = () => {
+        bridgeRef.current.ws = null;
+        setConnectedAt(null);
+        if (!intentionallyDisconnected.current) safeStop().catch(() => {});
+        setStatus('本地桥已断开');
+      };
+      ws.onerror = () => setStatus('本地桥连接失败，请确认 Orange Pi 后端服务已启动');
+    } catch (err) {
+      setStatus(`本地桥连接失败：${err.message}`);
+    }
+  };
+
   const disconnect = async () => {
     intentionallyDisconnected.current = true;
     await safeStop();
@@ -583,8 +678,11 @@ function App() {
       serialRef.current.writer?.releaseLock?.();
       await serialRef.current.port?.close?.();
     } catch {}
+    try { bridgeRef.current.ws?.close?.(); } catch {}
     bluetoothRef.current = { device: null, server: null, writeChar: null, notifyChar: null };
     serialRef.current = { port: null, reader: null, writer: null, keepReading: false };
+    bridgeRef.current = { ws: null };
+    rxPacketBuffer.current = '';
     setConnectedAt(null);
     setStatus('未连接');
   };
@@ -595,6 +693,12 @@ function App() {
       const writer = serialRef.current.writer;
       if (!writer) throw new Error('尚未连接串口');
       await writer.write(bytes);
+      return;
+    }
+    if (transport === 'bridge') {
+      const ws = bridgeRef.current.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('尚未连接本地串口桥');
+      ws.send(bytes);
       return;
     }
     const ch = bluetoothRef.current.writeChar;
@@ -692,7 +796,7 @@ function App() {
       else if (k === 'p') setPlotSettings((p) => ({ ...p, paused: !p.paused }));
       else if (k === 'r') clearPlot();
       else if (k === 'f') requestFullscreen();
-      else if (k === 'c') connected ? disconnect() : (transport === 'serial' ? connectSerial() : connectBle());
+      else if (k === 'c') connected ? disconnect() : (transport === 'serial' ? connectSerial() : transport === 'bridge' ? connectBridge() : connectBle());
     };
     const up = (e) => {
       const k = e.key.toLowerCase();
@@ -758,14 +862,14 @@ function App() {
   };
 
   const exportConfig = () => {
-    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups };
+    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups, serial: serialSettings, bridge: bridgeSettings };
     downloadTextFile(`bluetooth_tuning_config_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2), 'application/json;charset=utf-8');
   };
   const importConfig = async (file) => {
     if (!file) return;
     const text = await file.text();
     const cfg = { ...DEFAULT_CONFIG, ...JSON.parse(text) };
-    setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid(cfg.pid); setPidGroups(cfg.pidGroups || []);
+    setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid({ ...DEFAULT_PID, ...(cfg.pid || {}) }); setPidGroups(cfg.pidGroups || []); setSerialSettings({ ...DEFAULT_SERIAL, ...(cfg.serial || {}) }); setBridgeSettings({ ...DEFAULT_BRIDGE, ...(cfg.bridge || {}) });
   };
   const resetConfig = () => {
     if (!confirm('确认恢复默认配置？当前浏览器保存的界面设置会被覆盖。')) return;
@@ -778,8 +882,8 @@ function App() {
   const renderStatus = () => (
     <Card className="connection">
       <div className={`status ${connected ? 'ok' : 'bad'}`}>{status}</div>
-      <div className="status-meta">设备：{deviceName || '未选择'} · 方式：{loopback ? '环回' : transport === 'serial' ? 'Web Serial' : 'BLE'} · 时长：{formatDuration(connectedAt ? now - connectedAt : 0)}</div>
-      <Button variant="primary" onClick={transport === 'serial' ? connectSerial : connectBle}>{transport === 'serial' ? <Usb size={16} /> : <Bluetooth size={16} />}连接</Button>
+      <div className="status-meta">设备：{deviceName || '未选择'} · 方式：{loopback ? '环回' : transport === 'serial' ? 'Web Serial' : transport === 'bridge' ? '本地桥' : 'BLE'} · 时长：{formatDuration(connectedAt ? now - connectedAt : 0)}</div>
+      <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
       <Button onClick={disconnect}><Cable size={16} />断开</Button>
       <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
     </Card>
@@ -789,7 +893,7 @@ function App() {
     <Card>
       <SectionTitle icon={Settings} title="连接与通用设置" />
       <div className="grid2">
-        <label>连接方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="ble">BLE 蓝牙</option><option value="serial">Web Serial</option></select></label>
+        <label>连接方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="serial">Web Serial / USB-TTL</option><option value="bridge">Orange Pi 本地桥</option><option value="ble">BLE 蓝牙</option></select></label>
         <label className="check with-title"><span>环回测试</span><input type="checkbox" checked={loopback} onChange={(e) => setLoopback(e.target.checked)} /></label>
       </div>
       {transport === 'ble' && <>
@@ -797,6 +901,24 @@ function App() {
         {['service', 'write', 'notify'].map((key) => <label key={key}>{key.toUpperCase()} UUID<input className="mono" value={uuids[key]} onChange={(e) => { setPreset('custom'); setUuids({ ...uuids, [key]: e.target.value }); }} /></label>)}
         <label className="check"><input type="checkbox" checked={autoReconnect} onChange={(e) => setAutoReconnect(e.target.checked)} />断线后自动尝试重连</label>
       </>}
+      {transport === 'serial' && <div className="serial-options">
+        <div className="grid3">
+          <MiniInput label="波特率" type="number" value={serialSettings.baudRate} onChange={(v) => setSerialSettings({ ...serialSettings, baudRate: v })} />
+          <label>数据位<select value={serialSettings.dataBits} onChange={(e) => setSerialSettings({ ...serialSettings, dataBits: Number(e.target.value) })}><option value={8}>8</option><option value={7}>7</option></select></label>
+          <label>停止位<select value={serialSettings.stopBits} onChange={(e) => setSerialSettings({ ...serialSettings, stopBits: Number(e.target.value) })}><option value={1}>1</option><option value={2}>2</option></select></label>
+        </div>
+        <div className="grid3">
+          <label>校验位<select value={serialSettings.parity} onChange={(e) => setSerialSettings({ ...serialSettings, parity: e.target.value })}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
+          <label>流控<select value={serialSettings.flowControl} onChange={(e) => setSerialSettings({ ...serialSettings, flowControl: e.target.value })}><option value="none">none</option><option value="hardware">hardware</option></select></label>
+          <MiniInput label="协议残包缓存" type="number" value={serialSettings.packetBufferSize} onChange={(v) => setSerialSettings({ ...serialSettings, packetBufferSize: v })} />
+        </div>
+        <label className="check"><input type="checkbox" checked={serialSettings.useRememberedPort} onChange={(e) => setSerialSettings({ ...serialSettings, useRememberedPort: e.target.checked })} />优先连接已授权串口，适合 Orange Pi Kiosk 模式</label>
+        <p className="hint">建议 Orange Pi 手持版优先用 USB-TTL：CH340 / CP2102 / STM32 虚拟串口均可。</p>
+      </div>}
+      {transport === 'bridge' && <div className="serial-options">
+        <label>本地桥 WebSocket 地址<input className="mono" value={bridgeSettings.url} onChange={(e) => setBridgeSettings({ ...bridgeSettings, url: e.target.value })} /></label>
+        <p className="hint">本地桥由 Orange Pi 上的 Python 程序打开真实串口，网页只连 ws://127.0.0.1:8765/ws，可减少浏览器串口授权弹窗。</p>
+      </div>}
       <div className="grid2">
         <label>文本编码<select value={encoding} onChange={(e) => setEncoding(e.target.value)}><option value="utf-8">UTF-8</option><option value="gbk">GBK</option></select></label>
         <label>换行格式<select value={newline} onChange={(e) => setNewline(e.target.value)}><option value="\r\n">\r\n</option><option value="\n">\n</option><option value="\r">\r</option></select></label>
@@ -902,7 +1024,7 @@ function App() {
 
   const renderRecords = () => <div className="stack"><Card><SectionTitle icon={Save} title="数据记录" right={<div className="row"><Button variant={recording ? 'danger' : 'primary'} onClick={recording ? stopRecord : startRecord}>{recording ? <StopCircle size={16} /> : <Play size={16} />}{recording ? '停止并保存' : '开始记录'}</Button></div>} /><MiniInput label="记录名称" value={recordName} onChange={setRecordName} /><p>记录时不会改变协议，只保存网页收到的 [plot,...] 数据。可用于不同 PID 参数的曲线对比。</p></Card><Card><SectionTitle icon={RefreshCw} title="历史记录回放" /><div className="group-list">{records.map((rec) => <div className="group-row" key={rec.id}><span><b>{rec.name}</b><em>{new Date(rec.createdAt).toLocaleString()} · {rec.rows?.length || 0} 点</em></span><Button onClick={() => replayRecord(rec)}>回放</Button><Button onClick={() => exportPlotCsv(rec.rows || [], Object.keys(rec.rows?.[0] || {}).filter((k) => k.startsWith('CH')), rec.curveNames || {})}><Download size={14} /></Button><Button onClick={() => setRecords(records.filter((r) => r.id !== rec.id))}><Trash2 size={14} /></Button></div>)}</div></Card></div>;
 
-  const renderThemeHelp = () => <div className="stack"><Card><SectionTitle icon={HelpCircle} title="使用说明" /><div className="help-grid"><div><h3>连接</h3><p>BLE 模式选择 UUID 预设后点击连接；Web Serial 可连接 USB-TTL、CH340、CP2102、虚拟串口。环回测试不需要硬件。</p></div><div><h3>协议</h3><pre>[key,name,down/up]\n[slider,name,value]\n[joystick,lx,ly,rx,ry]\n[plot,v1,v2,...]\n[display,x,y,text,size]</pre></div><div><h3>快捷键</h3><p>空格急停；W/A/S/D 控制左摇杆；P 暂停绘图；R 清空绘图；F 浏览器全屏；C 连接/断开。</p></div><div><h3>安全</h3><p>页面隐藏、断开连接、关闭页面时会尽量发送 [joystick,0,0,0,0]，急停按钮固定在页面右上角。</p></div></div></Card><Card><SectionTitle icon={Paintbrush} title="外观设置" right={<div className="row">{Object.entries(THEME_PRESETS).map(([k, v]) => <Button key={k} onClick={() => setTheme({ ...theme, ...v.values })}>{v.label}</Button>)}</div>} /><div className="theme-grid">{['primary','accent','danger','bg','card','input','text','muted','border'].map((key) => <label key={key}>{key}<input type="color" value={theme[key]} onChange={(e) => setTheme({ ...theme, [key]: e.target.value })} /></label>)}</div><div className="grid3"><MiniInput label="圆角" type="number" value={theme.radius} onChange={(v) => setTheme({ ...theme, radius: v })} /><MiniInput label="字体缩放" type="number" step="0.05" value={theme.fontScale} onChange={(v) => setTheme({ ...theme, fontScale: v })} /><label>密度<select value={theme.density} onChange={(e) => setTheme({ ...theme, density: e.target.value })}><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="large">宽松</option></select></label><label>阴影<select value={theme.shadow} onChange={(e) => setTheme({ ...theme, shadow: e.target.value })}><option value="flat">扁平</option><option value="soft">柔和阴影</option><option value="glow">科技发光</option></select></label></div></Card></div>;
+  const renderThemeHelp = () => <div className="stack"><Card><SectionTitle icon={HelpCircle} title="使用说明" /><div className="help-grid"><div><h3>连接</h3><p>Web Serial 可直接连接 USB-TTL、CH340、CP2102、STM32 虚拟串口；Orange Pi 本地桥适合开机自启动；BLE 模式仍保留 UUID 预设。环回测试不需要硬件。</p></div><div><h3>协议</h3><pre>[key,name,down/up]\n[slider,name,value]\n[joystick,lx,ly,rx,ry]\n[plot,v1,v2,...]\n[display,x,y,text,size]</pre></div><div><h3>快捷键</h3><p>空格急停；W/A/S/D 控制左摇杆；P 暂停绘图；R 清空绘图；F 浏览器全屏；C 连接/断开。</p></div><div><h3>安全</h3><p>页面隐藏、断开连接、关闭页面时会尽量发送 [joystick,0,0,0,0]，急停按钮固定在页面右上角。串口接收已加入分包/粘包缓存。</p></div></div></Card><Card><SectionTitle icon={Paintbrush} title="外观设置" right={<div className="row">{Object.entries(THEME_PRESETS).map(([k, v]) => <Button key={k} onClick={() => setTheme({ ...theme, ...v.values })}>{v.label}</Button>)}</div>} /><div className="theme-grid">{['primary','accent','danger','bg','card','input','text','muted','border'].map((key) => <label key={key}>{key}<input type="color" value={theme[key]} onChange={(e) => setTheme({ ...theme, [key]: e.target.value })} /></label>)}</div><div className="grid3"><MiniInput label="圆角" type="number" value={theme.radius} onChange={(v) => setTheme({ ...theme, radius: v })} /><MiniInput label="字体缩放" type="number" step="0.05" value={theme.fontScale} onChange={(v) => setTheme({ ...theme, fontScale: v })} /><label>密度<select value={theme.density} onChange={(e) => setTheme({ ...theme, density: e.target.value })}><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="large">宽松</option></select></label><label>阴影<select value={theme.shadow} onChange={(e) => setTheme({ ...theme, shadow: e.target.value })}><option value="flat">扁平</option><option value="soft">柔和阴影</option><option value="glow">科技发光</option></select></label></div></Card></div>;
 
   const renderConfig = () => <Card><SectionTitle icon={FileDown} title="配置导入 / 导出" /><div className="row"><Button variant="primary" onClick={exportConfig}><FileDown size={16} />导出配置 JSON</Button><label className="file-btn"><FileUp size={16} />导入配置 JSON<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label><Button variant="danger" onClick={resetConfig}><RotateCcw size={16} />恢复默认配置</Button></div><p>配置包含蓝牙 UUID、主题、摇杆参数、曲线名称、显示隐藏、PID 参数组、按键和滑杆。换电脑或队友共用时可直接导入。</p></Card>;
 
@@ -921,7 +1043,7 @@ function App() {
   return <div className={appClass} style={themeStyle}>
     <Button className="sticky-emergency" variant="danger" onClick={emergencyStop}><AlertTriangle size={18} />急停 SPACE</Button>
     <div className="container">
-      <header className="hero"><div><h1>网页蓝牙/串口远程调参助手</h1><p>BLE 调参 · Web Serial · 小车联调 · 实时绘图 · 记录回放 · 主题自定义</p></div>{renderStatus()}</header>
+      <header className="hero"><div><h1>手持 PID 调参终端</h1><p>Orange Pi · Web Serial · 本地串口桥 · BLE 调参 · 小车联调 · 实时绘图</p></div>{renderStatus()}</header>
       <div className="layout"><aside className="sidebar">{renderSettings()}{renderTabs()}</aside><main className="content">{content}</main></div>
     </div>
   </div>;

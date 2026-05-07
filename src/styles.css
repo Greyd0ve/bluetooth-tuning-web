@@ -139,3 +139,35 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
   .plot-channel-row { grid-template-columns: 1fr; }
   .sticky-emergency { right: 12px; top: 10px; }
 }
+
+.serial-options {
+  margin: 10px 0 12px;
+  padding: 10px;
+  border: 1px dashed var(--app-border, #cbd5e1);
+  border-radius: calc(var(--app-radius, 20px) * 0.7);
+  background: color-mix(in srgb, var(--app-card, #fff) 78%, var(--app-bg, #eef2f7));
+}
+
+@media (pointer: coarse) {
+  .btn { min-height: 44px; padding: 11px 14px; }
+  input, select, textarea { min-height: 44px; }
+  input[type="range"] { min-height: 36px; }
+  .nav-card .btn { min-height: 48px; }
+  .sticky-emergency { min-height: 52px; }
+}
+
+@media (max-width: 1024px) {
+  .page { padding: 14px; }
+  h1 { font-size: 25px; }
+  .layout { grid-template-columns: 300px 1fr; }
+  .drive-split, .remote-layout { grid-template-columns: 1fr; }
+  .plot-box { height: 420px; }
+  .display-screen { height: 520px; }
+  .big-text { height: 420px; }
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { position: static; max-height: none; }
+  .connection { min-width: 0; justify-content: flex-start; }
+}
