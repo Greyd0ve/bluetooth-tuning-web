@@ -83,10 +83,19 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
 .plot-box.split { height: 320px; position: relative; padding-top: 36px; }
 .split-title { position: absolute; left: 14px; top: 10px; display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--app-muted, #475569); }
 .split-title i { width: 12px; height: 12px; display: inline-block; border-radius: 999px; }
-.plot-channel-panel { margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.plot-channel-row { display: grid; grid-template-columns: 92px 1fr 74px 110px; align-items: center; gap: 8px; border: 1px solid var(--app-border, #e2e8f0); border-radius: calc(var(--app-radius, 20px) * 0.7); padding: 8px; background: color-mix(in srgb, var(--app-card, #fff) 82%, var(--app-bg, #eef2f7)); }
-.plot-color-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: var(--app-muted, #334155); }
-.plot-color-chip i { width: 13px; height: 13px; border-radius: 999px; display: inline-block; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.15); }
+.plot-channel-panel { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+.plot-channel-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; gap: 10px; border: 1px solid var(--app-border, #e2e8f0); border-radius: calc(var(--app-radius, 20px) * 0.75); padding: 12px; background: color-mix(in srgb, var(--app-card, #fff) 84%, var(--app-bg, #eef2f7)); }
+.plot-channel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.plot-color-chip { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 800; color: var(--app-muted, #334155); min-width: 0; }
+.plot-color-chip i { width: 14px; height: 14px; border-radius: 999px; display: inline-block; flex: 0 0 auto; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.15); }
+.plot-name-editor { margin: 0; color: var(--app-muted, #334155); }
+.plot-name-editor span { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.plot-name-editor input { margin-top: 0; min-height: 44px; font-size: 16px; font-weight: 700; padding: 10px 12px; }
+.plot-name-editor input:focus { box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-primary, #2563eb) 12%, transparent); }
+.plot-channel-actions { display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: center; gap: 8px; }
+.plot-visible-toggle { padding: 6px 10px; border: 1px solid var(--app-border, #e2e8f0); border-radius: 999px; background: color-mix(in srgb, var(--app-card, #fff) 80%, var(--app-bg, #eef2f7)); }
+.btn.mini-btn { min-height: 34px; padding: 6px 10px; font-size: 12px; border-radius: 999px; }
+.plot-latest { min-height: 34px; display: flex; align-items: center; justify-content: center; }
 .stat-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .stat-card { border: 1px solid var(--app-border, #e2e8f0); border-radius: calc(var(--app-radius, 20px) * 0.7); padding: 10px; background: color-mix(in srgb, var(--app-card, #fff) 84%, var(--app-bg, #eef2f7)); display: flex; flex-direction: column; gap: 4px; color: var(--app-muted, #475569); }
 .stat-card b { color: var(--app-text, #0f172a); }
@@ -136,7 +145,8 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
   .page { padding: 12px; }
   .nav-card, .grid2, .grid3, .grid5, .button-grid { grid-template-columns: 1fr; }
   .pid-row { grid-template-columns: 1fr 1fr; }
-  .plot-channel-row { grid-template-columns: 1fr; }
+  .plot-channel-panel { grid-template-columns: 1fr; }
+  .plot-channel-actions { grid-template-columns: 1fr; }
   .sticky-emergency { right: 12px; top: 10px; }
 }
 
@@ -311,7 +321,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
 .plot-box.compact { height: calc(100vh - 255px); min-height: 390px; }
 .plot-box { min-height: 420px; }
 .plot-channel-panel {
-  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 .stat-grid {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));

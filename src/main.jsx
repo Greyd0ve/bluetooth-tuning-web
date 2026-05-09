@@ -999,12 +999,32 @@ function App() {
         <PlotChart rows={visibleRows} keys={plotKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} compact={compact} />
         {!compact && <>
           <div className="plot-channel-panel">
-            {plotKeys.map((key, i) => <div className="plot-channel-row" key={key}>
-              <span className="plot-color-chip"><i style={{ background: PLOT_COLORS[i % PLOT_COLORS.length] }} />{key}</span>
-              <input value={curveNames[key] || key} onChange={(e) => setCurveNames({ ...curveNames, [key]: e.target.value })} />
-              <label className="check inline"><input type="checkbox" checked={curveVisible[key] !== false} onChange={(e) => setCurveVisible({ ...curveVisible, [key]: e.target.checked })} />显示</label>
-              <span className="value-box small">最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span>
-            </div>)}
+            {plotKeys.map((key, i) => {
+              const defaultName = DEFAULT_CONFIG.curveNames[key] || key;
+              const currentName = curveNames[key] ?? defaultName;
+              return (
+                <div className="plot-channel-row" key={key}>
+                  <div className="plot-channel-head">
+                    <span className="plot-color-chip"><i style={{ background: PLOT_COLORS[i % PLOT_COLORS.length] }} />{key}</span>
+                    <label className="check inline plot-visible-toggle"><input type="checkbox" checked={curveVisible[key] !== false} onChange={(e) => setCurveVisible({ ...curveVisible, [key]: e.target.checked })} />显示</label>
+                  </div>
+                  <label className="plot-name-editor">
+                    <span>曲线名称</span>
+                    <input
+                      value={currentName}
+                      placeholder={defaultName}
+                      autoComplete="off"
+                      onFocus={(e) => e.currentTarget.select()}
+                      onChange={(e) => setCurveNames({ ...curveNames, [key]: e.target.value })}
+                    />
+                  </label>
+                  <div className="plot-channel-actions">
+                    <span className="value-box small plot-latest">最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span>
+                    <Button className="mini-btn" onClick={() => setCurveNames({ ...curveNames, [key]: defaultName })}>恢复</Button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <div className="stat-grid">
             {plotKeys.map((key) => <div className="stat-card" key={key}><b>{curveNames[key] || key}</b><span>最新：{stats[key]?.latest?.toFixed?.(3) ?? '-'}</span><span>最大：{stats[key]?.max?.toFixed?.(3) ?? '-'}</span><span>最小：{stats[key]?.min?.toFixed?.(3) ?? '-'}</span><span>平均：{stats[key]?.avg?.toFixed?.(3) ?? '-'}</span></div>)}
