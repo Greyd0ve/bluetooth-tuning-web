@@ -165,7 +165,7 @@ const DEFAULT_CONFIG = {
   rxMode: 'text',
   txMode: 'text',
   txText: 'Hello',
-  tab: 'drive',
+  tab: 'workspace',
   loopback: false,
   joystick: DEFAULT_JOYSTICK,
   plot: DEFAULT_PLOT,
@@ -189,6 +189,44 @@ const DEFAULT_CONFIG = {
   serial: DEFAULT_SERIAL,
   bridge: DEFAULT_BRIDGE,
 };
+
+
+const PID_FIELDS = [
+  { key: 'targetSpeed', label: '目标速度', sendName: 'target', group: 'target' },
+  { key: 'kp', label: 'Kp', sendName: 'Kp', group: 'pid' },
+  { key: 'ki', label: 'Ki', sendName: 'Ki', group: 'pid' },
+  { key: 'kd', label: 'Kd', sendName: 'Kd', group: 'pid' },
+  { key: 'leftBias', label: '左轮补偿', sendName: 'leftBias', group: 'bias' },
+  { key: 'rightBias', label: '右轮补偿', sendName: 'rightBias', group: 'bias' },
+];
+
+const PID_GROUPS = [
+  { id: 'target', title: '目标速度', keys: ['targetSpeed'] },
+  { id: 'pid', title: 'PID 增益', keys: ['kp', 'ki', 'kd'] },
+  { id: 'bias', title: '左右轮补偿', keys: ['leftBias', 'rightBias'] },
+];
+
+function formatClock(ts) {
+  if (!ts) return '暂无';
+  return new Date(ts).toLocaleTimeString();
+}
+
+function formatAge(ts, nowValue = Date.now()) {
+  if (!ts) return '暂无';
+  const diff = Math.max(0, nowValue - ts);
+  if (diff < 1000) return '刚刚';
+  if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`;
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  return `${Math.floor(diff / 3600000)} 小时前`;
+}
+
+function getLogLines(text, count = 8) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-count);
+}
 
 function applyDeadzone(value, deadzone) {
   return Math.abs(value) < Number(deadzone || 0) ? 0 : value;
@@ -357,7 +395,9 @@ function App() {
   const [rxMode, setRxMode] = useState(saved.rxMode);
   const [txMode, setTxMode] = useState(saved.txMode);
   const [txText, setTxText] = useState(saved.txText);
-  const [tab, setTab] = useState(saved.tab);
+  const initialTab = ['workspace', 'remote', 'tools', 'config'].includes(saved.tab) ? saved.tab : 'workspace';
+  const [tab, setTab] = useState(initialTab);
+  const [toolTab, setToolTab] = useState('serial');
   const [loopback, setLoopback] = useState(saved.loopback);
   const [joystickConfig, setJoystickConfig] = useState(saved.joystick);
   const [plotSettings, setPlotSettings] = useState(saved.plot);
@@ -387,6 +427,11 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [recordName, setRecordName] = useState('速度阶跃测试');
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [lastRxAt, setLastRxAt] = useState(null);
+  const [lastTxAt, setLastTxAt] = useState(null);
+  const [lastPlotAt, setLastPlotAt] = useState(null);
+  const [emergencyAt, setEmergencyAt] = useState(null);
+  const [pendingPidKeys, setPendingPidKeys] = useState(() => new Set());
 
   const bluetoothRef = useRef({ device: null, server: null, writeChar: null, notifyChar: null });
   const serialRef = useRef({ port: null, reader: null, writer: null, keepReading: false });
@@ -406,7 +451,7 @@ function App() {
   useEffect(() => { encodingRef.current = encoding; }, [encoding]);
   useEffect(() => { plotPausedRef.current = plotSettings.paused; }, [plotSettings.paused]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
-  useInterval(() => setNow(Date.now()), connectedAt ? 1000 : null);
+  useInterval(() => setNow(Date.now()), 1000);
 
   const appClass = `page density-${theme.density} shadow-${theme.shadow}`;
   const themeStyle = {
@@ -442,6 +487,7 @@ function App() {
   useEffect(() => { saveJson(RECORD_KEY, { records }); }, [records]);
 
   const appendRx = (text) => {
+    setLastRxAt(Date.now());
     setRxLog((old) => {
       const next = old + text;
       const size = Number(cacheSize) || 0;
@@ -482,12 +528,14 @@ function App() {
       } else if (cmd === 'plot-clear' || cmd === 'p-c') {
         plotStart.current = Date.now();
         setPlotData([]);
+        setLastPlotAt(null);
       } else if ((cmd === 'plot' || cmd === 'p') && !plotPausedRef.current) {
         const values = parts.slice(1, 11).map(Number).filter(Number.isFinite);
         if (values.length) {
           const tms = Date.now() - plotStart.current;
           const row = { iso: new Date().toISOString(), tms, t: tms / 1000 };
           values.forEach((v, i) => { row[`CH${i + 1}`] = v; });
+          setLastPlotAt(Date.now());
           if (recordingRef.current) recordBuffer.current.push(row);
           setPlotData((old) => {
             const next = [...old, row];
@@ -718,6 +766,7 @@ function App() {
     try {
       const bytes = mode === 'hex' ? hexToBytes(value) : textToBytes(value, encoding);
       await writeBytes(bytes);
+      setLastTxAt(Date.now());
       if (loopback) {
         const text = mode === 'hex' ? bytesToText(bytes, encoding) : value;
         appendRx(mode === 'hex' ? bytesToHex(bytes) + ' ' : text);
@@ -743,6 +792,7 @@ function App() {
   }
 
   const emergencyStop = async () => {
+    setEmergencyAt(Date.now());
     setLeftJoy({ x: 0, y: 0 });
     setRightJoy({ x: 0, y: 0 });
     await sendPacket(['key', 'emergency', 'down']);
@@ -836,7 +886,7 @@ function App() {
     return out;
   }, [plotData, plotKeys]);
 
-  const clearPlot = () => { plotStart.current = Date.now(); setPlotData([]); };
+  const clearPlot = () => { plotStart.current = Date.now(); setPlotData([]); setLastPlotAt(null); };
   const applySpeedTemplate = () => setCurveNames((old) => ({ ...old, CH1: '当前速度', CH2: '目标速度', CH3: 'PWM输出', CH4: '速度误差' }));
 
   const startRecord = () => { recordBuffer.current = []; setRecording(true); appendTx(`开始记录：${recordName}`); };
@@ -848,18 +898,45 @@ function App() {
     setRecords((old) => [rec, ...old].slice(0, 20));
     appendTx(`已保存记录：${rec.name}，${rows.length} 点`);
   };
-  const replayRecord = (rec) => { plotStart.current = Date.now(); setCurveNames(rec.curveNames || curveNames); setPlotData(rec.rows || []); setTab('plot'); };
+  const replayRecord = (rec) => { plotStart.current = Date.now(); setCurveNames(rec.curveNames || curveNames); setPlotData(rec.rows || []); setTab('workspace'); };
 
+  const markPidDirty = (key) => setPendingPidKeys((old) => new Set([...old, key]));
+  const clearPidDirty = (keys) => {
+    setPendingPidKeys((old) => {
+      const next = new Set(old);
+      keys.forEach((key) => next.delete(key));
+      return next;
+    });
+  };
+  const updatePidValue = (key, value) => {
+    setPid((old) => ({ ...old, [key]: Number(value) }));
+    markPidDirty(key);
+  };
+  const changePidValue = (key, delta) => {
+    setPid((old) => ({ ...old, [key]: Number(old[key] || 0) + delta }));
+    markPidDirty(key);
+  };
   const sendSlider = async (name, value) => sendPacket(['slider', name, value]);
+  const sendPidField = async (field) => {
+    await sendSlider(field.sendName, pid[field.key]);
+    clearPidDirty([field.key]);
+    appendTx(`已发送参数：${field.label}=${pid[field.key]}`);
+  };
+  const sendPidGroup = async (groupId) => {
+    const fields = PID_FIELDS.filter((field) => field.group === groupId);
+    for (const field of fields) await sendSlider(field.sendName, pid[field.key]);
+    clearPidDirty(fields.map((field) => field.key));
+    appendTx(`已发送 ${fields.length} 项参数`);
+  };
   const sendAllPid = async () => {
-    const items = [
-      ['target', pid.targetSpeed], ['Kp', pid.kp], ['Ki', pid.ki], ['Kd', pid.kd], ['leftBias', pid.leftBias], ['rightBias', pid.rightBias],
-    ];
-    for (const item of items) await sendSlider(item[0], item[1]);
+    for (const field of PID_FIELDS) await sendSlider(field.sendName, pid[field.key]);
+    clearPidDirty(PID_FIELDS.map((field) => field.key));
+    appendTx(`已发送 ${PID_FIELDS.length} 项 PID 参数`);
   };
   const savePidGroup = () => {
     const group = { ...pid, id: Date.now(), savedAt: new Date().toISOString() };
     setPidGroups((old) => [group, ...old.filter((g) => g.groupName !== group.groupName)].slice(0, 12));
+    appendTx(`已保存参数组：${group.groupName || '未命名参数组'}`);
   };
 
   const exportConfig = () => {
@@ -880,13 +957,30 @@ function App() {
 
   const requestFullscreen = () => document.documentElement.requestFullscreen?.();
 
+  const connectionModeLabel = loopback ? '环回' : transport === 'serial' ? 'Web Serial' : transport === 'bridge' ? '本地桥' : 'BLE';
+  const dataActive = connected && lastRxAt && now - lastRxAt < 3000;
+  const plotActive = lastPlotAt && now - lastPlotAt < 3000;
+  const plotTimeout = connected && lastPlotAt && now - lastPlotAt > 5000;
+  const dirtyPidCount = pendingPidKeys.size;
+  const emergencyActive = emergencyAt && now - emergencyAt < 8000;
+  const connectionLabel = !connected ? '未连接' : dataActive ? '已连接，正在收包' : lastRxAt ? '已连接，等待数据' : '已连接，未收到数据';
+
   const renderStatus = () => (
-    <Card className="connection">
-      <div className={`status ${connected ? 'ok' : 'bad'}`}>
-        <span className="status-dot" />
-        <span>{status}</span>
+    <Card className="connection statusbar-workbench">
+      <div className="statusbar-main">
+        <span className={`status-pill ${connected ? dataActive ? 'ok' : 'warn' : 'bad'}`}>
+          <span className="status-dot" />{connectionLabel}
+        </span>
+        <span className="status-device">{deviceName || '未选择设备'}</span>
       </div>
-      <div className="status-meta">设备：{deviceName || '未选择'} · 方式：{loopback ? '环回' : transport === 'serial' ? 'Web Serial' : transport === 'bridge' ? '本地桥' : 'BLE'} · 时长：{formatDuration(connectedAt ? now - connectedAt : 0)}</div>
+      <div className="statusbar-grid">
+        <div><span>方式</span><b>{connectionModeLabel}</b></div>
+        <div><span>连接时长</span><b>{formatDuration(connectedAt ? now - connectedAt : 0)}</b></div>
+        <div><span>最近收包</span><b>{formatAge(lastRxAt, now)}</b></div>
+        <div><span>曲线更新</span><b className={plotTimeout ? 'warn-text' : ''}>{formatAge(lastPlotAt, now)}</b></div>
+        <div><span>参数状态</span><b className={dirtyPidCount ? 'warn-text' : ''}>{dirtyPidCount ? `${dirtyPidCount} 项未发送` : '已同步'}</b></div>
+        <div><span>急停</span><b className={emergencyActive ? 'danger-text' : ''}>{emergencyActive ? '刚刚触发' : '待命'}</b></div>
+      </div>
       <div className="connection-actions">
         <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
         <Button onClick={disconnect}><Cable size={16} />断开</Button>
@@ -894,18 +988,6 @@ function App() {
       </div>
     </Card>
   );
-
-  const renderDashboard = () => {
-    const latest = plotData[plotData.length - 1] || {};
-    return (
-      <section className="dashboard-strip" aria-label="手持调参状态栏">
-        <div className="dash-card accent"><span>连接</span><b>{connected ? '在线' : '离线'}</b><em>{transport === 'serial' ? `${serialSettings.baudRate} bps` : transport === 'bridge' ? '本地桥' : 'BLE'}</em></div>
-        <div className="dash-card"><span>曲线点数</span><b>{plotData.length}</b><em>{plotSettings.paused ? '已暂停' : `显示 ${visibleRows.length}`}</em></div>
-        <div className="dash-card"><span>目标 / 实际</span><b>{pid.targetSpeed}</b><em>{latest.CH1 != null ? `实际 ${Number(latest.CH1).toFixed(2)}` : '等待 [plot,...]'}</em></div>
-        <div className="dash-card danger"><span>安全</span><b>SPACE 急停</b><em>右上角常驻</em></div>
-      </section>
-    );
-  };
 
   const renderSettings = () => (
     <Card className={`settings-panel ${settingsExpanded ? 'is-open' : ''}`}>
@@ -958,11 +1040,12 @@ function App() {
   );
 
   const renderTabs = () => (
-    <Card className="nav-card">
+    <Card className="nav-card nav-card-main">
       {[
-        ['drive', Car, '联调'], ['plot', Activity, '曲线'], ['serial', Cable, '串口'], ['remote', Gamepad2, '驾驶'],
-        ['display', Monitor, '显示'], ['buttons', SquareMousePointer, '按键'], ['sliders', SlidersHorizontal, '滑杆'],
-        ['records', Save, '记录'], ['theme', Palette, '外观'], ['config', FileDown, '配置'],
+        ['workspace', Activity, '工作台'],
+        ['remote', Gamepad2, '驾驶'],
+        ['tools', BookOpen, '工具'],
+        ['config', FileDown, '配置'],
       ].map(([k, Icon, label]) => <Button key={k} className={tab === k ? 'is-active' : ''} variant={tab === k ? 'primary' : 'secondary'} onClick={() => setTab(k)}><Icon size={16} />{label}</Button>)}
     </Card>
   );
@@ -1034,18 +1117,204 @@ function App() {
     </div>
   );
 
-  const renderPidPanel = () => {
-    const pidItems = [
-      ['targetSpeed', '目标速度', 'target'], ['kp', 'Kp', 'Kp'], ['ki', 'Ki', 'Ki'], ['kd', 'Kd', 'Kd'], ['leftBias', '左轮补偿', 'leftBias'], ['rightBias', '右轮补偿', 'rightBias'],
-    ];
-    const change = (key, delta) => setPid((p) => ({ ...p, [key]: Number(p[key] || 0) + delta }));
-    return <Card><SectionTitle icon={SlidersHorizontal} title="PID 参数组" right={<div className="row"><Button variant="primary" onClick={sendAllPid}><Send size={16} />一键发送全部</Button><Button onClick={savePidGroup}><Save size={16} />保存参数组</Button></div>} />
-      <MiniInput label="参数组名称" value={pid.groupName} onChange={(v) => setPid({ ...pid, groupName: v })} />
-      <div className="pid-grid">{pidItems.map(([key, label, sendName]) => <div className="pid-row" key={key}><b>{label}</b><Button onClick={() => change(key, -Number(pid.stepLarge || 10))}>-{pid.stepLarge}</Button><Button onClick={() => change(key, -Number(pid.stepSmall || 1))}>-{pid.stepSmall}</Button><input type="number" value={pid[key]} onChange={(e) => setPid({ ...pid, [key]: Number(e.target.value) })} /><Button onClick={() => change(key, Number(pid.stepSmall || 1))}>+{pid.stepSmall}</Button><Button onClick={() => change(key, Number(pid.stepLarge || 10))}>+{pid.stepLarge}</Button><Button onClick={() => sendSlider(sendName, pid[key])}><Send size={14} /></Button></div>)}</div>
-      <div className="grid2"><MiniInput label="小步进" type="number" value={pid.stepSmall} onChange={(v) => setPid({ ...pid, stepSmall: v })} /><MiniInput label="大步进" type="number" value={pid.stepLarge} onChange={(v) => setPid({ ...pid, stepLarge: v })} /></div>
-      <h3>已保存参数组</h3><div className="group-list">{pidGroups.map((g) => <div className="group-row" key={g.id || g.groupName}><span><b>{g.groupName}</b><em>Kp={g.kp}, Ki={g.ki}, Kd={g.kd}, Target={g.targetSpeed}</em></span><Button onClick={() => setPid({ ...DEFAULT_PID, ...g })}>载入</Button><Button onClick={() => setPidGroups(pidGroups.filter((x) => x !== g))}><Trash2 size={14} /></Button></div>)}</div>
-    </Card>;
+  const renderCompactConnectionPanel = () => (
+    <Card className="workspace-card compact-connection-card">
+      <SectionTitle icon={Cable} title="连接设备" right={<span className={`status-pill tiny ${connected ? 'ok' : 'bad'}`}>{connected ? '在线' : '离线'}</span>} />
+      <div className="compact-connect-meta">
+        <span>方式</span><b>{connectionModeLabel}</b>
+        <span>设备</span><b>{deviceName || '未选择'}</b>
+      </div>
+      <div className="row mt">
+        <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>连接</Button>
+        <Button onClick={disconnect}>断开</Button>
+      </div>
+    </Card>
+  );
+
+  const renderPidOverview = () => (
+    <Card className="workspace-card pid-overview-card">
+      <SectionTitle icon={SlidersHorizontal} title="参数概览" right={dirtyPidCount ? <span className="dirty-badge">{dirtyPidCount} 未发送</span> : <span className="status-pill tiny ok">已同步</span>} />
+      <div className="pid-overview-grid">
+        {PID_FIELDS.map((field) => <div className={pendingPidKeys.has(field.key) ? 'is-dirty' : ''} key={field.key}><span>{field.label}</span><b>{pid[field.key]}</b></div>)}
+      </div>
+    </Card>
+  );
+
+  const renderPidFieldRow = (field) => {
+    const dirty = pendingPidKeys.has(field.key);
+    return (
+      <div className={`pid-field-row ${dirty ? 'is-dirty' : ''}`} key={field.key}>
+        <b>{field.label}</b>
+        <div className="pid-step-buttons">
+          <Button onClick={() => changePidValue(field.key, -Number(pid.stepLarge || 10))}>-{pid.stepLarge}</Button>
+          <Button onClick={() => changePidValue(field.key, -Number(pid.stepSmall || 1))}>-{pid.stepSmall}</Button>
+        </div>
+        <input type="number" value={pid[field.key]} onChange={(e) => updatePidValue(field.key, e.target.value)} />
+        <div className="pid-step-buttons">
+          <Button onClick={() => changePidValue(field.key, Number(pid.stepSmall || 1))}>+{pid.stepSmall}</Button>
+          <Button onClick={() => changePidValue(field.key, Number(pid.stepLarge || 10))}>+{pid.stepLarge}</Button>
+        </div>
+        <Button variant={dirty ? 'primary' : 'secondary'} onClick={() => sendPidField(field)}><Send size={14} />发送</Button>
+      </div>
+    );
   };
+
+  const renderPidWorkbench = () => (
+    <Card className="workspace-card pid-workbench-card">
+      <SectionTitle icon={SlidersHorizontal} title="PID 参数工作台" right={<Button variant="primary" onClick={sendAllPid}><Send size={16} />发送全部</Button>} />
+      <MiniInput label="参数组名称" value={pid.groupName} onChange={(v) => setPid({ ...pid, groupName: v })} />
+      <div className="grid2 pid-step-config"><MiniInput label="小步进" type="number" value={pid.stepSmall} onChange={(v) => setPid({ ...pid, stepSmall: v })} /><MiniInput label="大步进" type="number" value={pid.stepLarge} onChange={(v) => setPid({ ...pid, stepLarge: v })} /></div>
+      <div className="pid-section-list">
+        {PID_GROUPS.map((group) => {
+          const fields = PID_FIELDS.filter((field) => group.keys.includes(field.key));
+          const hasDirty = fields.some((field) => pendingPidKeys.has(field.key));
+          return (
+            <section className={`pid-section ${hasDirty ? 'is-dirty' : ''}`} key={group.id}>
+              <div className="pid-section-head"><h3>{group.title}</h3>{hasDirty && <span>有未发送改动</span>}<Button onClick={() => sendPidGroup(group.id)}>发送本组</Button></div>
+              <div className="pid-section-body">{fields.map(renderPidFieldRow)}</div>
+            </section>
+          );
+        })}
+      </div>
+    </Card>
+  );
+
+  const renderQuickActions = () => (
+    <Card className="workspace-card quick-actions-card">
+      <SectionTitle icon={Keyboard} title="快捷动作" />
+      <div className="quick-actions-grid">
+        <Button variant="primary" onClick={sendAllPid}><Send size={16} />发送全部 PID</Button>
+        <Button onClick={savePidGroup}><Save size={16} />保存参数组</Button>
+        <Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>
+        <Button onClick={clearPlot}><Trash2 size={16} />清空曲线</Button>
+        <Button onClick={() => setPlotSettings((p) => ({ ...p, paused: !p.paused }))}>{plotSettings.paused ? <Play size={16} /> : <Pause size={16} />}{plotSettings.paused ? '继续曲线' : '暂停曲线'}</Button>
+        <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
+      </div>
+    </Card>
+  );
+
+  const renderPidGroupPanel = () => (
+    <Card className="workspace-card pid-group-card">
+      <SectionTitle icon={Save} title="已保存参数组" right={<Button onClick={savePidGroup}>保存当前</Button>} />
+      <div className="group-list compact-groups">
+        {pidGroups.length === 0 && <p className="hint">暂无已保存参数组。</p>}
+        {pidGroups.map((g) => <div className="group-row compact" key={g.id || g.groupName}><span><b>{g.groupName}</b><em>Kp={g.kp} Ki={g.ki} Kd={g.kd} Target={g.targetSpeed}</em></span><Button onClick={() => { setPid({ ...DEFAULT_PID, ...g }); setPendingPidKeys(new Set(PID_FIELDS.map((field) => field.key))); }}>载入</Button><Button onClick={() => setPidGroups(pidGroups.filter((x) => x !== g))}><Trash2 size={14} /></Button></div>)}
+      </div>
+    </Card>
+  );
+
+  const renderPlotWorkbenchToolbar = () => (
+    <Card className="plot-workbench-toolbar">
+      <div className="toolbar-left"><b>实时曲线</b><span>{plotData.length} 点 · 显示 {visibleRows.length} 点</span></div>
+      <div className="toolbar-actions">
+        <Button onClick={() => setPlotSettings((p) => ({ ...p, paused: !p.paused }))}>{plotSettings.paused ? <Play size={16} /> : <Pause size={16} />}{plotSettings.paused ? '继续' : '暂停'}</Button>
+        <Button onClick={clearPlot}><Trash2 size={16} />清空</Button>
+        <label className="toolbar-select">模式<select value={plotSettings.mode} onChange={(e) => setPlotSettings({ ...plotSettings, mode: e.target.value })}><option value="single">单图</option><option value="split">分图</option></select></label>
+        <label className="toolbar-select">Y轴<select value={plotSettings.yAxisMode} onChange={(e) => setPlotSettings({ ...plotSettings, yAxisMode: e.target.value })}><option value="auto">自动Y</option><option value="fixed">固定Y</option></select></label>
+        <MiniInput label="最近点数" type="number" value={plotSettings.maxPoints} onChange={(v) => setPlotSettings({ ...plotSettings, maxPoints: v })} />
+        <Button onClick={() => exportPlotCsv(plotData, plotKeys, curveNames)}><Download size={16} />CSV</Button>
+      </div>
+      <details className="plot-more-settings">
+        <summary>更多曲线设置</summary>
+        <div className="grid3 mt"><MiniInput label="Y 最小" type="number" value={plotSettings.yMin} onChange={(v) => setPlotSettings({ ...plotSettings, yMin: v })} /><MiniInput label="Y 最大" type="number" value={plotSettings.yMax} onChange={(v) => setPlotSettings({ ...plotSettings, yMax: v })} /><MiniInput label="平滑窗口" type="number" value={plotSettings.smoothWindow} onChange={(v) => setPlotSettings({ ...plotSettings, smoothWindow: v })} /></div>
+        <div className="row mt"><label className="check inline"><input type="checkbox" checked={plotSettings.autoScroll} onChange={(e) => setPlotSettings({ ...plotSettings, autoScroll: e.target.checked })} />自动滚动</label><label className="check inline"><input type="checkbox" checked={plotSettings.smooth} onChange={(e) => setPlotSettings({ ...plotSettings, smooth: e.target.checked })} />曲线平滑</label><Button onClick={applySpeedTemplate}><Car size={16} />速度模板</Button></div>
+      </details>
+    </Card>
+  );
+
+  const renderMainPlotCard = () => (
+    <Card className="plot-main-card">
+      <PlotChart rows={visibleRows} keys={plotKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} />
+    </Card>
+  );
+
+  const renderPlotStatsStrip = () => (
+    <div className="plot-stats-strip">
+      {plotKeys.length === 0 && <Card className="plot-stat-mini empty">等待 [plot,...] 数据</Card>}
+      {plotKeys.map((key) => <div className="plot-stat-mini" key={key}><b>{curveNames[key] || key}</b><span>最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span><span>最大 {stats[key]?.max?.toFixed?.(2) ?? '-'}</span><span>最小 {stats[key]?.min?.toFixed?.(2) ?? '-'}</span><span>均值 {stats[key]?.avg?.toFixed?.(2) ?? '-'}</span></div>)}
+    </div>
+  );
+
+  const renderDriveMiniPanel = () => (
+    <details className="drive-mini-panel">
+      <summary>摇杆/驾驶小窗 · 左摇杆 {keyboardVector.active ? `${keyboardVector.x},${keyboardVector.y}` : `${leftJoy.x},${leftJoy.y}`} · 右摇杆 {rightJoy.x},{rightJoy.y}</summary>
+      <Card className="joystick-card compact-card">
+        <div className="joy-grid mini"><Joystick label="左摇杆 / WASD" value={keyboardVector.active ? { x: keyboardVector.x, y: keyboardVector.y } : leftJoy} config={joystickConfig} onChange={setLeftJoy} onActiveChange={setJoyActive} /><Joystick label="右摇杆" value={rightJoy} config={joystickConfig} onChange={setRightJoy} onActiveChange={setJoyActive} /></div>
+        <div className="row mt"><Button onClick={() => setTab('remote')}><Gamepad2 size={16} />进入驾驶页</Button><Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button></div>
+      </Card>
+    </details>
+  );
+
+  const renderLogSummaryPanel = () => {
+    const rxLines = getLogLines(rxLog, 8);
+    const txLines = getLogLines(txLog, 8);
+    return (
+      <Card className="workspace-card log-summary">
+        <SectionTitle icon={Cable} title="日志摘要" right={<Button onClick={() => { setTab('tools'); setToolTab('serial'); }}>完整串口</Button>} />
+        <div className="log-summary-section"><b>RX 最近接收</b><div className="log-summary-list">{rxLines.length ? rxLines.map((line, idx) => <div className="log-line rx" key={`rx-${idx}`}>{line}</div>) : <em>暂无接收</em>}</div></div>
+        <div className="log-summary-section"><b>TX 最近发送/状态</b><div className="log-summary-list">{txLines.length ? txLines.map((line, idx) => <div className={line.includes('失败') || line.includes('急停') ? 'log-line error' : 'log-line tx'} key={`tx-${idx}`}>{line}</div>) : <em>暂无发送</em>}</div></div>
+      </Card>
+    );
+  };
+
+  const renderChannelControlPanel = () => (
+    <Card className="workspace-card channel-panel">
+      <SectionTitle icon={Activity} title="通道管理" right={<Button onClick={applySpeedTemplate}>速度模板</Button>} />
+      <div className="channel-list">
+        {plotKeys.length === 0 && <p className="hint">收到 [plot,...] 后会显示通道。</p>}
+        {plotKeys.map((key, i) => {
+          const defaultName = DEFAULT_CONFIG.curveNames[key] || key;
+          const currentName = curveNames[key] ?? defaultName;
+          return (
+            <div className="channel-item" key={key}>
+              <div className="channel-item-head"><span className="plot-color-chip"><i style={{ background: PLOT_COLORS[i % PLOT_COLORS.length] }} />{key}</span><label className="check inline"><input type="checkbox" checked={curveVisible[key] !== false} onChange={(e) => setCurveVisible({ ...curveVisible, [key]: e.target.checked })} />显示</label></div>
+              <input value={currentName} placeholder={defaultName} autoComplete="off" onFocus={(e) => e.currentTarget.select()} onChange={(e) => setCurveNames({ ...curveNames, [key]: e.target.value })} />
+              <div className="channel-item-meta"><span>最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span><Button className="mini-btn" onClick={() => setCurveNames({ ...curveNames, [key]: defaultName })}>恢复</Button></div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+
+  const renderLiveStatusPanel = () => (
+    <Card className="workspace-card live-status-panel">
+      <SectionTitle icon={Monitor} title="实时状态" />
+      <div className="live-status-grid">
+        <div><span>数据点</span><b>{plotData.length}</b></div>
+        <div><span>显示点</span><b>{visibleRows.length}</b></div>
+        <div><span>最近曲线</span><b>{formatAge(lastPlotAt, now)}</b></div>
+        <div><span>记录</span><b>{recording ? '记录中' : '未记录'}</b></div>
+        <div><span>绘图</span><b>{plotSettings.paused ? '已暂停' : '运行中'}</b></div>
+        <div><span>发送</span><b>{formatAge(lastTxAt, now)}</b></div>
+      </div>
+    </Card>
+  );
+
+  const renderPidPanel = () => <div className="stack">{renderPidOverview()}{renderPidWorkbench()}{renderQuickActions()}{renderPidGroupPanel()}</div>;
+
+  const renderWorkspace = () => (
+    <div className="workspace-layout">
+      <aside className="workspace-left">
+        {renderCompactConnectionPanel()}
+        {renderPidOverview()}
+        {renderPidWorkbench()}
+        {renderQuickActions()}
+        {renderPidGroupPanel()}
+      </aside>
+      <section className="workspace-center">
+        {renderPlotWorkbenchToolbar()}
+        {renderMainPlotCard()}
+        {renderPlotStatsStrip()}
+        {renderDriveMiniPanel()}
+      </section>
+      <aside className="workspace-right">
+        {renderLogSummaryPanel()}
+        {renderChannelControlPanel()}
+        {renderLiveStatusPanel()}
+      </aside>
+    </div>
+  );
 
   const renderDrive = (remote = false) => (
     <div className={remote ? 'remote-layout' : 'drive-split'}>
@@ -1070,26 +1339,41 @@ function App() {
 
   const renderThemeHelp = () => <div className="stack"><Card><SectionTitle icon={HelpCircle} title="使用说明" /><div className="help-grid"><div><h3>连接</h3><p>Web Serial 可直接连接 USB-TTL、CH340、CP2102、STM32 虚拟串口；Orange Pi 本地桥适合开机自启动；BLE 模式仍保留 UUID 预设。环回测试不需要硬件。</p></div><div><h3>协议</h3><pre>[key,name,down/up]\n[slider,name,value]\n[joystick,lx,ly,rx,ry]\n[plot,v1,v2,...]\n[display,x,y,text,size]</pre></div><div><h3>快捷键</h3><p>空格急停；W/A/S/D 控制左摇杆；P 暂停绘图；R 清空绘图；F 浏览器全屏；C 连接/断开。</p></div><div><h3>安全</h3><p>页面隐藏、断开连接、关闭页面时会尽量发送 [joystick,0,0,0,0]，急停按钮固定在页面右上角。串口接收已加入分包/粘包缓存。</p></div></div></Card><Card><SectionTitle icon={Paintbrush} title="外观设置" right={<div className="row">{Object.entries(THEME_PRESETS).map(([k, v]) => <Button key={k} onClick={() => setTheme({ ...theme, ...v.values })}>{v.label}</Button>)}</div>} /><div className="theme-grid">{['primary','accent','danger','bg','card','input','text','muted','border'].map((key) => <label key={key}>{key}<input type="color" value={theme[key]} onChange={(e) => setTheme({ ...theme, [key]: e.target.value })} /></label>)}</div><div className="grid3"><MiniInput label="圆角" type="number" value={theme.radius} onChange={(v) => setTheme({ ...theme, radius: v })} /><MiniInput label="字体缩放" type="number" step="0.05" value={theme.fontScale} onChange={(v) => setTheme({ ...theme, fontScale: v })} /><label>密度<select value={theme.density} onChange={(e) => setTheme({ ...theme, density: e.target.value })}><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="large">宽松</option></select></label><label>阴影<select value={theme.shadow} onChange={(e) => setTheme({ ...theme, shadow: e.target.value })}><option value="flat">扁平</option><option value="soft">柔和阴影</option><option value="glow">科技发光</option></select></label></div></Card></div>;
 
+  const renderTools = () => {
+    const tools = [
+      ['serial', Cable, '完整串口'],
+      ['plot', Activity, '曲线完整版'],
+      ['display', Monitor, '显示屏'],
+      ['buttons', SquareMousePointer, '按键'],
+      ['sliders', SlidersHorizontal, '滑杆'],
+      ['records', Save, '记录'],
+      ['theme', Palette, '外观/说明'],
+    ];
+    const toolContent = toolTab === 'serial' ? renderSerial()
+      : toolTab === 'plot' ? renderPlotPanel(false)
+      : toolTab === 'display' ? renderDisplay()
+      : toolTab === 'buttons' ? renderButtons()
+      : toolTab === 'sliders' ? renderSliders()
+      : toolTab === 'records' ? renderRecords()
+      : renderThemeHelp();
+    return <div className="tools-layout"><Card className="tools-subnav">{tools.map(([k, Icon, label]) => <Button key={k} className={toolTab === k ? 'is-active' : ''} variant={toolTab === k ? 'primary' : 'secondary'} onClick={() => setToolTab(k)}><Icon size={16} />{label}</Button>)}</Card><div className="tools-content">{toolContent}</div></div>;
+  };
+
   const renderConfig = () => <Card><SectionTitle icon={FileDown} title="配置导入 / 导出" /><div className="row"><Button variant="primary" onClick={exportConfig}><FileDown size={16} />导出配置 JSON</Button><label className="file-btn"><FileUp size={16} />导入配置 JSON<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label><Button variant="danger" onClick={resetConfig}><RotateCcw size={16} />恢复默认配置</Button></div><p>配置包含蓝牙 UUID、主题、摇杆参数、曲线名称、显示隐藏、PID 参数组、按键和滑杆。换电脑或队友共用时可直接导入。</p></Card>;
 
   let content = null;
-  if (tab === 'serial') content = renderSerial();
-  else if (tab === 'drive') content = renderDrive(false);
+  if (tab === 'workspace') content = renderWorkspace();
   else if (tab === 'remote') content = renderDrive(true);
-  else if (tab === 'plot') content = renderPlotPanel(false);
-  else if (tab === 'display') content = renderDisplay();
-  else if (tab === 'buttons') content = renderButtons();
-  else if (tab === 'sliders') content = renderSliders();
-  else if (tab === 'records') content = renderRecords();
-  else if (tab === 'theme') content = renderThemeHelp();
+  else if (tab === 'tools') content = renderTools();
   else if (tab === 'config') content = renderConfig();
+  else content = renderWorkspace();
 
   return <div className={appClass} style={themeStyle}>
     <Button className="sticky-emergency" variant="danger" onClick={emergencyStop}><AlertTriangle size={18} />急停 SPACE</Button>
     <div className="container">
-      <header className="hero"><div><h1>手持 PID 调参终端</h1><p>Orange Pi · Web Serial · 本地串口桥 · BLE 调参 · 小车联调 · 实时绘图</p></div>{renderStatus()}</header>
-      {renderDashboard()}
-      <div className="layout"><aside className="sidebar">{renderTabs()}{renderSettings()}</aside><main className="content">{content}</main></div>
+      <header className="hero hero-workbench"><div><h1>桌面联调工作台</h1><p>连接设备 · 调 PID · 看曲线 · 查日志 · Orange Pi 本地化部署</p></div>{renderStatus()}</header>
+      <div className="top-nav-row">{renderTabs()}{renderSettings()}</div>
+      <main className="content full-content">{content}</main>
     </div>
   </div>;
 }
