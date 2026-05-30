@@ -686,3 +686,106 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
   .plot-main-card .plot-box { height: 48vh; min-height: 360px; }
   .tools-subnav { position: static; display: grid; grid-template-columns: repeat(2, 1fr); }
 }
+
+/* v14 custom button packet editor */
+.custom-button-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: stretch;
+}
+.custom-button-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.custom-button-editor.has-custom-packet {
+  border-color: color-mix(in srgb, var(--app-primary, #2563eb) 45%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, var(--app-primary, #2563eb) 7%, var(--app-card, #fff));
+}
+.button-editor-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.button-editor-head label,
+.custom-packet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
+  font-weight: 700;
+}
+.button-name-input {
+  min-width: 0;
+}
+.button-lock-check {
+  align-self: center;
+  white-space: nowrap;
+  margin-bottom: 9px;
+}
+.button-lock-check input:disabled + span,
+.button-lock-check:has(input:disabled) {
+  opacity: 0.55;
+}
+.custom-packet-field textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 12px;
+  background: var(--app-input, #fff);
+  color: var(--app-text, #0f172a);
+  padding: 10px 12px;
+  outline: none;
+}
+.custom-packet-field textarea:focus {
+  border-color: var(--app-primary, #2563eb);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-primary, #2563eb) 15%, transparent);
+}
+.custom-send-button {
+  height: 68px;
+  margin-top: 0;
+}
+.button-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.button-mode-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  border: 1px solid var(--app-border, #e2e8f0);
+  color: var(--app-muted, #64748b);
+  background: color-mix(in srgb, var(--app-card, #fff) 80%, var(--app-bg, #eef2f7));
+}
+.button-mode-tag.custom {
+  color: var(--app-primary, #2563eb);
+  border-color: color-mix(in srgb, var(--app-primary, #2563eb) 35%, var(--app-border, #e2e8f0));
+  background: color-mix(in srgb, var(--app-primary, #2563eb) 10%, var(--app-card, #fff));
+}
+.small-text {
+  font-size: 13px;
+  line-height: 1.6;
+}
+@media (max-width: 700px) {
+  .button-editor-head {
+    grid-template-columns: 1fr;
+  }
+  .button-lock-check {
+    margin-bottom: 0;
+  }
+  .custom-send-button {
+    height: 60px;
+  }
+}

@@ -173,10 +173,10 @@ const DEFAULT_CONFIG = {
   curveVisible: {},
   theme: DEFAULT_THEME,
   buttons: [
-    { name: 'start', lock: false, state: false },
-    { name: 'stop', lock: false, state: false },
-    { name: 'emergency', lock: false, state: false },
-    { name: 'mode', lock: true, state: false },
+    { name: 'start', lock: false, state: false, customPacket: '' },
+    { name: 'stop', lock: false, state: false, customPacket: '' },
+    { name: 'emergency', lock: false, state: false, customPacket: '' },
+    { name: 'mode', lock: true, state: false, customPacket: '' },
   ],
   sliders: [
     { name: 'target', min: -100, max: 100, step: 1, value: 0 },
@@ -1331,7 +1331,114 @@ function App() {
 
   const renderDisplay = () => <Card><SectionTitle icon={Monitor} title="显示屏：接收 [display,x,y,text,size]" right={<Button onClick={() => setDisplayItems([])}><Trash2 size={16} />清空</Button>} /><div className="display-screen"><div className="origin">(0,0)</div>{displayItems.map((it, idx) => <div className="display-item" key={`${it.x}-${it.y}-${idx}`} style={{ left: it.x, top: it.y, fontSize: it.size }}>{it.content}</div>)}</div></Card>;
 
-  const renderButtons = () => <Card><SectionTitle icon={SquareMousePointer} title="按键" right={<Button onClick={() => setButtons([...buttons, { name: String(buttons.length + 1), lock: false, state: false }])}>增加</Button>} /><div className="button-grid">{buttons.map((btn, idx) => <div className="button-editor" key={idx}><input value={btn.name} onChange={(e) => setButtons(buttons.map((b, i) => i === idx ? { ...b, name: e.target.value } : b))} /><label className="check"><input type="checkbox" checked={btn.lock} onChange={(e) => setButtons(buttons.map((b, i) => i === idx ? { ...b, lock: e.target.checked } : b))} />自锁</label><Button className="big-button" variant={btn.state ? 'primary' : 'secondary'} onPointerDown={() => { if (btn.lock) return; setButtons(buttons.map((b, i) => i === idx ? { ...b, state: true } : b)); sendPacket(['key', btn.name, 'down']); }} onPointerUp={() => { if (btn.lock) { const next = !btn.state; setButtons(buttons.map((b, i) => i === idx ? { ...b, state: next } : b)); sendPacket(['key', btn.name, next ? 'down' : 'up']); } else { setButtons(buttons.map((b, i) => i === idx ? { ...b, state: false } : b)); sendPacket(['key', btn.name, 'up']); } }}>{btn.name}</Button></div>)}</div></Card>;
+  const sendCustomButtonPacket = async (btn) => {
+    const packet = String(btn.customPacket || '').trim();
+    if (!packet) return false;
+    await sendRaw(packet + (packetNewline ? newlineValue : ''), 'text');
+    return true;
+  };
+
+  const updateButtonAt = (idx, patch) => {
+    setButtons((old) => old.map((b, i) => i === idx ? { ...b, ...patch } : b));
+  };
+
+  const renderButtons = () => (
+    <Card>
+      <SectionTitle
+        icon={SquareMousePointer}
+        title="按键 / 自定义数据包"
+        right={
+          <Button onClick={() => setButtons([...buttons, { name: String(buttons.length + 1), lock: false, state: false, customPacket: '' }])}>
+            增加
+          </Button>
+        }
+      />
+      <p className="muted small-text">
+        在“自定义数据包”中填写内容后，点击该按键会优先发送你填写的数据包；留空时保持原来的 [key,名称,down/up] 行为。是否自动追加换行仍由连接设置中的“数据包末尾换行”控制。
+      </p>
+      <div className="button-grid custom-button-grid">
+        {buttons.map((btn, idx) => {
+          const customPacket = String(btn.customPacket || '');
+          const hasCustom = customPacket.trim().length > 0;
+          return (
+            <div className={`button-editor custom-button-editor ${hasCustom ? 'has-custom-packet' : ''}`} key={idx}>
+              <div className="button-editor-head">
+                <label>
+                  按键名称
+                  <input
+                    className="button-name-input"
+                    value={btn.name}
+                    onChange={(e) => updateButtonAt(idx, { name: e.target.value })}
+                  />
+                </label>
+                <label className="check button-lock-check" title={hasCustom ? '自定义数据包启用时，自锁只影响默认 key 包模式' : '默认 key 包模式下生效'}>
+                  <input
+                    type="checkbox"
+                    checked={!!btn.lock}
+                    disabled={hasCustom}
+                    onChange={(e) => updateButtonAt(idx, { lock: e.target.checked })}
+                  />
+                  自锁
+                </label>
+              </div>
+
+              <label className="custom-packet-field">
+                自定义数据包
+                <textarea
+                  value={customPacket}
+                  placeholder="例如：[pid,start] 或 [servo,1,90]"
+                  spellCheck="false"
+                  onChange={(e) => updateButtonAt(idx, { customPacket: e.target.value })}
+                  onFocus={(e) => e.target.select()}
+                />
+              </label>
+
+              <Button
+                className="big-button custom-send-button"
+                variant={btn.state ? 'primary' : hasCustom ? 'primary' : 'secondary'}
+                title={hasCustom ? `点击发送：${customPacket}` : `默认发送：[key,${btn.name},down/up]`}
+                onPointerDown={() => {
+                  if (hasCustom) {
+                    updateButtonAt(idx, { state: true });
+                    sendCustomButtonPacket(btn);
+                    return;
+                  }
+                  if (btn.lock) return;
+                  updateButtonAt(idx, { state: true });
+                  sendPacket(['key', btn.name, 'down']);
+                }}
+                onPointerUp={() => {
+                  if (hasCustom) {
+                    updateButtonAt(idx, { state: false });
+                    return;
+                  }
+                  if (btn.lock) {
+                    const next = !btn.state;
+                    updateButtonAt(idx, { state: next });
+                    sendPacket(['key', btn.name, next ? 'down' : 'up']);
+                  } else {
+                    updateButtonAt(idx, { state: false });
+                    sendPacket(['key', btn.name, 'up']);
+                  }
+                }}
+                onPointerCancel={() => {
+                  if (hasCustom || !btn.lock) updateButtonAt(idx, { state: false });
+                }}
+              >
+                {hasCustom ? '发送自定义包' : btn.name}
+              </Button>
+
+              <div className="button-editor-actions">
+                <span className={`button-mode-tag ${hasCustom ? 'custom' : 'default'}`}>{hasCustom ? '自定义包模式' : '默认 key 包模式'}</span>
+                <Button onClick={() => updateButtonAt(idx, { customPacket: '' })}>清空包</Button>
+                <Button variant="danger" onClick={() => setButtons(buttons.filter((_, i) => i !== idx))}>删除</Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
 
   const renderSliders = () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
 
