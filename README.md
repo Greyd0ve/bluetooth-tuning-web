@@ -1,189 +1,195 @@
-# 手持 PID 调参终端 v10
+# Bluetooth Tuning Web
 
-这是一个面向小车、嵌入式设备、BLE 串口模块和 Orange Pi 4 Pro 手持调试终端的网页上位机。项目基于 Vite + React，可部署到 GitHub Pages，也可以在 Orange Pi 本机 Kiosk 模式运行。网页端协议保持兼容，不改变单片机端已有解析逻辑。
+一个面向嵌入式调试、小车联调、PID 参数整定和蓝牙/串口通信测试的网页上位机。项目基于 **React + Vite** 开发，可部署到 **GitHub Pages**，也可以运行在 **Orange Pi 4 Pro** 上，配合触摸屏做成便携式手持 PID 调参终端。
 
-## 固定协议格式
+在线访问：
 
-本版本没有修改协议，仍然使用文本方括号数据包：
+```text
+https://greyd0ve.github.io/bluetooth-tuning-web/
+```
+
+---
+
+## 项目定位
+
+本项目不是普通串口助手，而是面向控制类项目的调试工作台。它适合用于：
+
+- 小车速度环、位置环 PID 调参
+- 电机、舵机、云台、编码器等嵌入式设备联调
+- BLE 蓝牙串口模块调试
+- USB-TTL / CH340 / CP2102 / STM32 虚拟串口调试
+- Orange Pi 4 Pro 触摸屏手持调参终端
+- 实时曲线观察、参数组保存、调试日志查看
+
+---
+
+## 主要功能
+
+### 桌面端三栏工作台
+
+默认进入“工作台”视图，首屏同时显示：
+
+- 顶部连接状态栏
+- 左侧 PID 参数工作台
+- 中央实时曲线主区
+- 右侧日志摘要与通道管理
+
+适合桌面端和 Orange Pi 外接屏幕调试使用。
+
+### 多种连接方式
+
+支持以下通信方式：
+
+- **BLE 蓝牙串口**
+- **Web Serial / USB-TTL**
+- **Orange Pi 本地桥**
+- **环回测试模式**
+
+其中 Orange Pi 本地桥通过 WebSocket 连接本机 Python 后端，再由 Python 打开串口或蓝牙设备，适合在 Falkon、非 Chromium 浏览器或 Kiosk 环境中使用。
+
+### PID 参数调节
+
+支持常用 PID 参数：
+
+- 目标速度 `target`
+- 比例系数 `Kp`
+- 积分系数 `Ki`
+- 微分系数 `Kd`
+- 左轮补偿 `leftBias`
+- 右轮补偿 `rightBias`
+
+支持单项发送、分组发送、一键发送全部 PID、参数组保存与载入，以及参数修改后的“未发送”状态提示。
+
+### 实时曲线绘图
+
+支持接收下位机发送的：
+
+```text
+[plot,数值1,数值2,数值3,...]
+```
+
+并实时绘制曲线。支持：
+
+- 单图 / 分图显示
+- 曲线暂停 / 继续
+- 清空曲线
+- 自动 Y 轴 / 固定 Y 轴
+- 曲线名称自定义
+- 通道显示 / 隐藏
+- 最新值、最大值、最小值、平均值统计
+- CSV 导出
+
+### 工具页功能
+
+工具页保留完整高级功能：
+
+- 完整串口收发
+- 曲线完整版
+- 显示屏协议测试
+- 自定义按键
+- 自定义滑杆
+- 记录回放
+- 外观说明
+
+### 自定义按键数据包
+
+在 **工具 → 按键** 中，每个按键都可以配置自定义数据包。
+
+例如填写：
+
+```text
+[pid,start]
+```
+
+点击该按键后会直接发送：
+
+```text
+[pid,start]
+```
+
+如果自定义数据包为空，则保留原来的默认按键协议：
 
 ```text
 [key,按键名称,down]
 [key,按键名称,up]
-[slider,滑杆名称,滑杆值]
-[joystick,左X,左Y,右X,右Y]
-[plot,数值1,数值2,数值3,...]
+```
+
+---
+
+## 通信协议
+
+项目默认使用文本方括号协议：
+
+```text
+[命令,参数1,参数2,...]
+```
+
+常用数据包示例：
+
+```text
+[slider,Kp,1.20]
+[slider,Ki,0.03]
+[slider,Kd,0.15]
+[slider,target,100]
+[joystick,0,100,0,0]
+[key,emergency,down]
+[plot,100,95,230,5]
+[display,10,20,Hello,26]
 [plot-clear]
-[display,X坐标,Y坐标,显示内容,字号]
 [display-clear]
 ```
 
-单片机端可以继续使用原来的 `strtok`、`strcmp`、`atoi`、`atof` 等方式解析。
+建议单片机端通过 `[` 和 `]` 识别完整包，再用 `,` 分割字段，可使用 `strtok`、`strcmp`、`atoi`、`atof` 等函数解析。
+
+下位机返回曲线数据示例：
+
+```c
+printf("[plot,%d,%d,%d,%d]\r\n", target_speed, current_speed, pwm_output, error);
+```
 
 ---
 
-## v10 新增优化内容
+## 推荐下位机协议设计
 
-### 1. 蓝牙连接稳定性优化
-
-- BLE 连接成功后显示设备名、连接方式和连接时长。
-- 显示当前连接状态，断开后会提示原因。
-- 支持断线后自动尝试重连。
-- 保留常见 BLE UART UUID 预设：Nordic UART、FFE0/FFE1、自定义 UUID。
-
-### 2. 小车安全控制优化
-
-- 页面右上角固定显示“急停 SPACE”按钮。
-- 急停会发送：
+PID 调参建议使用如下命令：
 
 ```text
-[key,emergency,down]
-[joystick,0,0,0,0]
+[pid,set,kp,1.20]
+[pid,set,ki,0.03]
+[pid,set,kd,0.15]
+[pid,set,target,100]
+[pid,start]
+[pid,stop]
+[pid,get]
 ```
 
-- 页面隐藏、刷新、关闭、主动断开连接时，会尽量发送 `[joystick,0,0,0,0]`。
-- 摇杆释放后自动回中。
-
-### 3. PID 调参面板升级
-
-- 支持 Kp、Ki、Kd、目标速度、左右轮补偿。
-- 支持小步进 / 大步进微调。
-- 支持一键发送全部参数，仍然用原协议发送：
+下位机可以返回：
 
 ```text
-[slider,target,目标速度]
-[slider,Kp,Kp值]
-[slider,Ki,Ki值]
-[slider,Kd,Kd值]
-[slider,leftBias,左补偿]
-[slider,rightBias,右补偿]
+[pid,val,kp,1.20,ki,0.03,kd,0.15,target,100]
+[status,ok]
+[plot,100,95,230,5]
 ```
-
-- 支持保存多组 PID 参数并快速载入。
-
-### 4. 绘图分图模式
-
-绘图界面支持两种显示方式：
-
-- 单图模式：所有曲线显示在同一个图表里。
-- 分图模式：每条曲线单独一个图表，适合速度、PWM、误差范围差距较大的场景。
-
-保留原有功能：
-
-- 曲线名称自定义。
-- 曲线显示 / 隐藏。
-- Y 轴自动范围 / 固定范围。
-- X 轴真实时间。
-- 最新值、最大值、最小值、平均值。
-- CSV 导出。
-- 速度闭环模板。
-
-### 5. 数据记录和回放
-
-新增“记录回放”页面：
-
-- 开始记录：保存当前收到的 `[plot,...]` 数据。
-- 停止并保存：把本次调试曲线保存到浏览器本地。
-- 回放：把历史记录重新加载到绘图界面。
-- 导出：把某条历史记录导出成 CSV。
-
-这适合对比不同 PID 参数下的小车响应。
-
-### 6. 配置导入 / 导出
-
-新增“配置”页面：
-
-- 导出配置 JSON。
-- 导入配置 JSON。
-- 恢复默认配置。
-
-配置内容包含：
-
-- 蓝牙 UUID。
-- 主题颜色。
-- 摇杆参数。
-- 按键 / 滑杆设置。
-- PID 参数组。
-- 曲线名称和显示状态。
-
-适合换电脑、换浏览器或队友共用。
-
-### 7. 键盘快捷键
-
-| 快捷键 | 功能 |
-|---|---|
-| 空格 | 急停 |
-| W / A / S / D | 控制左摇杆 |
-| P | 暂停 / 继续绘图 |
-| R | 清空绘图 |
-| F | 浏览器全屏 |
-| C | 连接 / 断开 |
-
-### 8. 全屏驾驶模式
-
-新增“全屏驾驶”页面：
-
-- 大摇杆。
-- 固定急停。
-- 连接状态。
-- 小车速度曲线。
-- 适合比赛调车、遥控测试时使用。
-
-### 9. Web Serial 模式
-
-除 BLE 蓝牙外，新增 Web Serial 连接方式，可用于：
-
-- USB-TTL。
-- CH340。
-- CP2102。
-- STM32 虚拟串口。
-- 其他浏览器支持的串口设备。
-
-Web Serial 模式不改变协议，只是把数据从蓝牙发送改成串口发送。v10 增加了波特率、数据位、停止位、校验位和流控设置。
-
-
-### 11. Orange Pi 手持终端增强
-
-- 默认连接方式调整为 Web Serial / USB-TTL，更贴合 Orange Pi 4 Pro 手持调参。
-- 新增串口参数设置：波特率、数据位、停止位、校验位、流控。
-- 新增串口分包/粘包缓存，能处理 `[plot,...]` 被拆成多段到达的情况。
-- 协议解析器改为状态机，支持 `\[`、`\]` 转义，显示屏文本兼容性更好。
-- 新增 Orange Pi 本地串口桥模式：网页连接 `ws://127.0.0.1:8765/ws`，后端由 Python 打开真实串口。
-- 增加触摸屏布局优化，粗指针设备下按钮和输入框更大。
-
-Orange Pi 详细部署说明见：
-
-```text
-README_ORANGEPI.md
-orangepi/serial_bridge.py
-```
-
-### 10. 代码结构优化
-
-本版本将常用工具函数拆分到 `src/utils`：
-
-```text
-src/utils/protocol.js   协议、HEX、编码、UUID 工具
-src/utils/csv.js        CSV 和文件下载工具
-src/utils/storage.js    本地配置存储工具
-src/main.jsx            主界面和业务逻辑
-src/styles.css          样式文件
-```
-
-后续可以继续拆分为更细的组件，例如 `PlotPanel.jsx`、`JoystickPanel.jsx`、`BluetoothPanel.jsx`。
 
 ---
 
-## 本地运行
+## 本地开发
 
-第一次运行需要安装依赖：
+### 环境要求
 
-```powershell
+- Node.js
+- npm
+- Chrome / Edge / Chromium 系浏览器
+
+### 安装依赖
+
+```bash
 npm install
 ```
 
-启动本机网站：
+### 启动开发服务器
 
-```powershell
+```bash
 npm run dev
 ```
 
@@ -193,97 +199,338 @@ npm run dev
 http://localhost:5173/
 ```
 
-推荐使用桌面版 Chrome 或 Edge。
+### 局域网调试
 
----
-
-## 一键启动
-
-Windows 下可以双击：
-
-```text
-start.bat
+```bash
+npm run dev:lan
 ```
 
-脚本会自动检查依赖并启动本地网站。
+### 构建静态网站
 
----
-
-## 构建静态网站
-
-```powershell
+```bash
 npm run build
 ```
 
-构建结果会生成在：
+构建结果在：
 
 ```text
-dist
+dist/
+```
+
+### 本地预览构建结果
+
+```bash
+npm run preview
 ```
 
 ---
 
 ## GitHub Pages 部署
 
-本项目已经包含 GitHub Actions 配置：
+项目已经适配 GitHub Pages。常规流程：
 
-```text
-.github/workflows/deploy.yml
-```
-
-上传到 GitHub 后，在仓库中开启：
-
-```text
-Settings -> Pages -> Source -> GitHub Actions
-```
-
-以后每次执行：
-
-```powershell
+```bash
 git add .
-git commit -m "update website"
+git commit -m "update"
 git push
 ```
 
-GitHub 会自动构建并发布到固定 HTTPS 网站。
-
----
-
-## 浏览器权限说明
-
-- Web Bluetooth 需要 HTTPS 或 `localhost` 环境。
-- GitHub Pages 是 HTTPS，可以正常使用 Web Bluetooth。
-- Web Serial 也需要浏览器授权，推荐 Chrome / Edge。
-- Orange Pi 本地串口桥建议在本机 HTTP 页面中使用，详见 README_ORANGEPI.md。
-- 云端网站不会帮你连接蓝牙，蓝牙和串口连接使用的是当前打开网页这台电脑的硬件。
-
----
-
-## 单片机端示例
-
-速度闭环调试时，单片机可以发送：
-
-```c
-printf("[plot,%d,%d,%d,%d]\\r\\n", current_speed, target_speed, pwm_output, error);
-```
-
-网页端速度闭环模板会把曲线命名为：
+然后在 GitHub 仓库中检查：
 
 ```text
-CH1 = 当前速度
-CH2 = 目标速度
-CH3 = PWM输出
-CH4 = 速度误差
+Actions
+Settings -> Pages
+```
+
+如果使用 GitHub Actions 自动部署，请确保 Pages 来源设置正确。
+
+---
+
+## Windows 上传 Orange Pi 离线部署包
+
+如果 Orange Pi 无法访问 GitHub，可以在 Windows 上构建后传输到 Orange Pi。
+
+### Windows 构建
+
+```powershell
+npm install
+npm run build -- --base=./
+Compress-Archive -Path .\dist\* -DestinationPath .\dist-orange-pi.zip -Force
+scp .\dist-orange-pi.zip orangepi@你的OrangePi_IP:/home/orangepi/
+```
+
+### Orange Pi 解压
+
+```bash
+mkdir -p ~/pid-web
+rm -rf ~/pid-web/*
+unzip -o ~/dist-orange-pi.zip -d ~/pid-web
+```
+
+如果没有 `unzip`：
+
+```bash
+python3 -m zipfile -e ~/dist-orange-pi.zip ~/pid-web
 ```
 
 ---
 
-## 建议的安全策略
+## Orange Pi 本地网页服务
 
-网页端已经会尽量发送停车命令，但实际小车仍建议在单片机端增加超时保护：
+创建 systemd 服务：
 
-```text
-如果 300ms ~ 500ms 没收到新的摇杆或控制数据，就自动停车。
+```bash
+sudo tee /etc/systemd/system/pid-web.service > /dev/null <<'EOF'
+[Unit]
+Description=PID tuning web static server
+After=network.target
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/home/orangepi/pid-web
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 127.0.0.1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
 ```
 
-这样即使蓝牙断开、浏览器卡死或电脑死机，小车也不会一直保持最后一次速度。
+启用：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now pid-web.service
+```
+
+检查：
+
+```bash
+sudo systemctl status pid-web.service --no-pager
+curl -I http://127.0.0.1:8080
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8080
+```
+
+---
+
+## Orange Pi 开机自动打开调参界面
+
+创建启动脚本：
+
+```bash
+mkdir -p ~/bin
+tee ~/bin/start-pid-kiosk.sh > /dev/null <<'EOF'
+#!/bin/bash
+
+export DISPLAY=:0
+export XAUTHORITY=/home/orangepi/.Xauthority
+
+URL="http://127.0.0.1:8080"
+
+sleep 8
+
+for i in $(seq 1 30); do
+    if curl -s "$URL" > /dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+pkill -f "falkon" || true
+falkon "$URL" &
+
+sleep 6
+
+xdotool search --onlyvisible --class falkon windowactivate key F11 || true
+EOF
+chmod +x ~/bin/start-pid-kiosk.sh
+```
+
+创建 XFCE 自启动项：
+
+```bash
+mkdir -p ~/.config/autostart
+tee ~/.config/autostart/pid-web-kiosk.desktop > /dev/null <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=PID Web Kiosk
+Comment=Open PID tuning web page on startup
+Exec=/home/orangepi/bin/start-pid-kiosk.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+EOF
+```
+
+重启后即可自动进入全屏调参界面。
+
+---
+
+## Orange Pi 本地串口桥
+
+如果浏览器不支持 Web Serial，推荐使用本地桥：
+
+```text
+网页
+  ↓ WebSocket
+Python 串口桥
+  ↓ pyserial
+USB-TTL / 单片机
+```
+
+安装依赖：
+
+```bash
+sudo apt install python3-serial python3-websockets -y
+sudo usermod -aG dialout $USER
+```
+
+启动串口桥：
+
+```bash
+python3 orangepi/serial_bridge.py --port auto --baud 115200
+```
+
+网页中选择：
+
+```text
+连接方式：Orange Pi 本地桥
+WebSocket：ws://127.0.0.1:8765/ws
+```
+
+---
+
+## BLE 蓝牙模块说明
+
+如果使用 BLE 蓝牙串口模块，推荐架构是：
+
+```text
+Falkon / 浏览器网页
+  ↓ WebSocket
+Orange Pi Python BLE 桥
+  ↓ BlueZ / bleak
+BLE 蓝牙串口模块
+  ↓ UART
+单片机
+```
+
+这样不依赖浏览器 Web Bluetooth，适合 Orange Pi 手持终端。
+
+注意：不同 BLE 模块的 Service UUID / Characteristic UUID 可能不同，需要根据模块实际信息配置。
+
+常见 BLE UART UUID：
+
+```text
+Nordic UART Service:
+write:  6e400002-b5a3-f393-e0a9-e50e24dcca9e
+notify: 6e400003-b5a3-f393-e0a9-e50e24dcca9e
+
+FFE0 / FFE1:
+write/notify: 0000ffe1-0000-1000-8000-00805f9b34fb
+```
+
+---
+
+## 项目结构
+
+```text
+.
+├── index.html
+├── package.json
+├── vite.config.js
+├── start.bat
+├── src/
+│   ├── main.jsx
+│   ├── styles.css
+│   └── utils/
+│       ├── protocol.js
+│       ├── csv.js
+│       └── storage.js
+├── public/
+│   └── .nojekyll
+└── orangepi/
+    ├── serial_bridge.py
+    ├── requirements.txt
+    └── run-kiosk.sh
+```
+
+---
+
+## 不建议提交的文件
+
+建议 `.gitignore` 中包含：
+
+```gitignore
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+```
+
+如果已经误提交过，可以执行：
+
+```bash
+git rm -r --cached node_modules
+git rm -r --cached dist
+git add .gitignore
+git commit -m "remove generated files"
+```
+
+---
+
+## 常用快捷键
+
+| 快捷键 | 功能 |
+|---|---|
+| 空格 | 急停 |
+| W / A / S / D | 摇杆控制 |
+| P | 暂停 / 继续绘图 |
+| R | 清空曲线 |
+| F | 浏览器全屏 |
+| C | 连接 / 断开 |
+
+---
+
+## 安全建议
+
+调试小车、电机、云台等设备时建议：
+
+- 保留物理急停开关
+- 下位机端加入通信超时保护
+- 参数范围做限幅
+- 第一次调参时架空轮子或断开负载
+- 不要让电机控制完全依赖网页端安全逻辑
+
+推荐下位机策略：
+
+```text
+300 ms ~ 500 ms 未收到控制包，自动停车或关闭输出。
+```
+
+---
+
+## 当前版本重点
+
+当前版本包含：
+
+- 桌面三栏工作台
+- Orange Pi 本地部署支持
+- Falkon 全屏 Kiosk 使用方式
+- Web Serial / BLE / 本地桥连接方式
+- PID 未发送状态提示
+- 曲线名称编辑优化
+- 自定义按键数据包发送
+
+---
+
+## License
+
+本项目当前未指定开源许可证。如需公开开源，建议后续补充 `LICENSE` 文件，例如 MIT License。
