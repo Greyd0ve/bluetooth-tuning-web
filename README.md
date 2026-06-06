@@ -30,9 +30,10 @@ https://greyd0ve.github.io/bluetooth-tuning-web/
 默认进入“工作台”视图，首屏同时显示：
 
 - 顶部连接状态栏
-- 左侧 PID 参数工作台
+- 左侧连接、桥接、预设和协议提示
 - 中央实时曲线主区
-- 右侧日志摘要与通道管理
+- 右侧 PID 参数工作台
+- 底部结构化调试日志
 
 适合桌面端和 Orange Pi 外接屏幕调试使用。
 
@@ -60,6 +61,8 @@ https://greyd0ve.github.io/bluetooth-tuning-web/
 
 支持单项发送、分组发送、一键发送全部 PID、参数组保存与载入，以及参数修改后的“未发送”状态提示。
 
+当前电脑端工作台会区分“编辑值”和“上次发送值”。修改参数后只标记为未发送，拖动滑杆不会自动连续下发；点击单项发送、发送改动或发送全部后，发送成功才会变为已同步。每个参数都会显示编辑值、已发值和差值，并支持撤销到上次发送值。
+
 ### 实时曲线绘图
 
 支持接收下位机发送的：
@@ -78,6 +81,38 @@ https://greyd0ve.github.io/bluetooth-tuning-web/
 - 通道显示 / 隐藏
 - 最新值、最大值、最小值、平均值统计
 - CSV 导出
+
+默认通道名称为：
+
+```text
+CH1 target
+CH2 current
+CH3 error
+CH4 pwm
+```
+
+通道名称、显示/隐藏、最大保留点数、自动/固定 Y 轴都可以在工作台中调整。非法 `[plot,...]` 数据包不会导致页面崩溃，会进入 ERROR 日志并累计异常包数量。
+
+### 调试日志
+
+底部日志区按类型区分：
+
+- `TX`：网页发送到设备的数据
+- `RX`：设备或桥接服务返回的数据
+- `ERROR`：发送失败、解析失败、非法数据包
+- `SYSTEM`：连接、断开、导入导出、记录保存等状态变化
+- `WARN`：浏览器不支持、未连接发送、缓存溢出等警告
+
+日志支持清空、复制、按类型过滤和暂停自动滚动。日志和曲线数据都有数量限制，适合长时间观察 PID 曲线。
+
+### 推荐环境与排查
+
+- 推荐浏览器：桌面版 Chrome / Edge。Web Serial 和 Web Bluetooth 需要 Chromium 系浏览器支持。
+- 推荐分辨率：1920×1080、1600×900、1366×768。
+- GitHub Pages：保持静态前端部署即可，不需要后端；部署后 Web Serial / Web Bluetooth 仍受浏览器安全策略影响。
+- Orange Pi Bridge：先启动 `orangepi/serial_bridge.py`，再在页面选择 Orange Pi Bridge，并确认地址类似 `ws://127.0.0.1:8765/ws`。
+- Loopback：仅用于页面模拟测试，不代表真实硬件已连接。
+- 常见问题：没有串口弹窗时检查浏览器兼容性和 HTTPS/localhost 环境；Bridge 连接失败时检查 Python 服务、串口权限和 WebSocket 地址。
 
 ### 工具页功能
 
@@ -133,7 +168,7 @@ https://greyd0ve.github.io/bluetooth-tuning-web/
 [slider,target,100]
 [joystick,0,100,0,0]
 [key,emergency,down]
-[plot,100,95,230,5]
+[plot,100,95,5,230]
 [display,10,20,Hello,26]
 [plot-clear]
 [display-clear]
@@ -144,7 +179,7 @@ https://greyd0ve.github.io/bluetooth-tuning-web/
 下位机返回曲线数据示例：
 
 ```c
-printf("[plot,%d,%d,%d,%d]\r\n", target_speed, current_speed, pwm_output, error);
+printf("[plot,%d,%d,%d,%d]\r\n", target_speed, current_speed, error, pwm_output);
 ```
 
 ---
@@ -168,7 +203,7 @@ PID 调参建议使用如下命令：
 ```text
 [pid,val,kp,1.20,ki,0.03,kd,0.15,target,100]
 [status,ok]
-[plot,100,95,230,5]
+[plot,100,95,5,230]
 ```
 
 ---

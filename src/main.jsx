@@ -45,7 +45,7 @@ import {
 import { downloadTextFile, exportPlotCsv } from './utils/csv.js';
 import { loadJson, saveJson } from './utils/storage.js';
 
-const CONFIG_KEY = 'bluetooth_tuning_web_config_v10';
+const CONFIG_KEY = 'bluetooth_tuning_web_config_v15';
 const RECORD_KEY = 'bluetooth_tuning_web_records_v9';
 
 const PRESETS = {
@@ -65,9 +65,21 @@ const PRESETS = {
 };
 
 const PLOT_COLORS = [
-  '#2563eb', '#dc2626', '#16a34a', '#ca8a04', '#9333ea',
-  '#ea580c', '#0891b2', '#be185d', '#4f46e5', '#65a30d',
+  '#22d3ee', '#34d399', '#f59e0b', '#f43f5e', '#a78bfa',
+  '#60a5fa', '#fb923c', '#2dd4bf', '#e879f9', '#84cc16',
 ];
+
+const LOG_TYPES = ['TX', 'RX', 'ERROR', 'SYSTEM', 'WARN'];
+const MAX_STRUCTURED_LOGS = 800;
+
+const PID_LIMITS = {
+  targetSpeed: { min: -1000, max: 1000, step: 1 },
+  kp: { min: 0, max: 1000, step: 0.01 },
+  ki: { min: 0, max: 1000, step: 0.01 },
+  kd: { min: 0, max: 1000, step: 0.01 },
+  leftBias: { min: -255, max: 255, step: 1 },
+  rightBias: { min: -255, max: 255, step: 1 },
+};
 
 const THEME_PRESETS = {
   blue: {
@@ -106,7 +118,7 @@ const DEFAULT_JOYSTICK = {
 const DEFAULT_PLOT = {
   paused: false,
   autoScroll: true,
-  maxPoints: 300,
+  maxPoints: 1000,
   yAxisMode: 'auto',
   yMin: -120,
   yMax: 120,
@@ -143,11 +155,19 @@ const DEFAULT_BRIDGE = {
 };
 
 const DEFAULT_THEME = {
-  ...THEME_PRESETS.blue.values,
-  radius: 20,
+  primary: '#22d3ee',
+  accent: '#8b5cf6',
+  danger: '#fb4563',
+  bg: '#090d12',
+  card: '#101821',
+  input: '#0c1219',
+  text: '#e6edf3',
+  muted: '#8da1af',
+  border: '#243241',
+  radius: 8,
   fontScale: 1,
-  density: 'comfortable',
-  shadow: 'soft',
+  density: 'compact',
+  shadow: 'flat',
 };
 
 const DEFAULT_CONFIG = {
@@ -169,7 +189,7 @@ const DEFAULT_CONFIG = {
   loopback: false,
   joystick: DEFAULT_JOYSTICK,
   plot: DEFAULT_PLOT,
-  curveNames: { CH1: '当前速度', CH2: '目标速度', CH3: 'PWM输出', CH4: '速度误差' },
+  curveNames: { CH1: 'target', CH2: 'current', CH3: 'error', CH4: 'pwm' },
   curveVisible: {},
   theme: DEFAULT_THEME,
   buttons: [
@@ -239,6 +259,29 @@ function formatDuration(ms) {
   const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
   const sec = String(s % 60).padStart(2, '0');
   return `${h}:${m}:${sec}`;
+}
+
+function formatNumber(value, digits = 3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  if (Math.abs(n) >= 1000 || Number.isInteger(n)) return String(n);
+  return n.toFixed(digits).replace(/\.?0+$/, '');
+}
+
+function normalizePidValue(key, raw, fallback = 0) {
+  const limits = PID_LIMITS[key] || { min: -999999, max: 999999, step: 0.01 };
+  const text = String(raw ?? '').trim();
+  if (!text) return { ok: false, value: fallback, reason: '不能为空' };
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return { ok: false, value: fallback, reason: '只能输入数字' };
+  const number = Number(text);
+  if (!Number.isFinite(number)) return { ok: false, value: fallback, reason: '不是有效数字' };
+  if (number < limits.min || number > limits.max) return { ok: false, value: fallback, reason: `范围 ${limits.min} ~ ${limits.max}` };
+  return { ok: true, value: number, reason: '' };
+}
+
+function compactLogText(value, max = 220) {
+  const text = String(value ?? '').replace(/\r/g, '\\r').replace(/\n/g, '\\n').trim();
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
 
 function useInterval(callback, delay) {
@@ -427,16 +470,29 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [recordName, setRecordName] = useState('速度阶跃测试');
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [connectionState, setConnectionState] = useState('idle');
+  const [disconnectReason, setDisconnectReason] = useState('');
   const [lastRxAt, setLastRxAt] = useState(null);
   const [lastTxAt, setLastTxAt] = useState(null);
   const [lastPlotAt, setLastPlotAt] = useState(null);
   const [emergencyAt, setEmergencyAt] = useState(null);
+  const [rxFrequency, setRxFrequency] = useState(0);
+  const [errorPacketCount, setErrorPacketCount] = useState(0);
   const [pendingPidKeys, setPendingPidKeys] = useState(() => new Set());
+  const [lastSentPid, setLastSentPid] = useState(() => ({ ...DEFAULT_PID, ...(saved.lastSentPid || saved.pid || {}) }));
+  const [pidDrafts, setPidDrafts] = useState(() => Object.fromEntries(PID_FIELDS.map((field) => [field.key, String((saved.pid || DEFAULT_PID)[field.key] ?? 0)])));
+  const [pidErrors, setPidErrors] = useState({});
+  const [pidSendState, setPidSendState] = useState({});
+  const [logs, setLogs] = useState([]);
+  const [logFilters, setLogFilters] = useState(() => Object.fromEntries(LOG_TYPES.map((type) => [type, true])));
+  const [logAutoscroll, setLogAutoscroll] = useState(true);
 
   const bluetoothRef = useRef({ device: null, server: null, writeChar: null, notifyChar: null });
   const serialRef = useRef({ port: null, reader: null, writer: null, keepReading: false });
   const bridgeRef = useRef({ ws: null });
   const rxPacketBuffer = useRef('');
+  const rxTimestampsRef = useRef([]);
+  const logConsoleRef = useRef(null);
   const intentionallyDisconnected = useRef(false);
   const plotStart = useRef(Date.now());
   const packetTimer = useRef(0);
@@ -452,6 +508,11 @@ function App() {
   useEffect(() => { plotPausedRef.current = plotSettings.paused; }, [plotSettings.paused]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
   useInterval(() => setNow(Date.now()), 1000);
+  useInterval(() => {
+    const nowTime = Date.now();
+    rxTimestampsRef.current = rxTimestampsRef.current.filter((ts) => nowTime - ts <= 5000);
+    setRxFrequency(rxTimestampsRef.current.length / 5);
+  }, 1000);
 
   const appClass = `page density-${theme.density} shadow-${theme.shadow}`;
   const themeStyle = {
@@ -469,7 +530,7 @@ function App() {
   };
 
   const newlineValue = useMemo(() => newline.replace('\\r', '\r').replace('\\n', '\n'), [newline]);
-  const connected = status.startsWith('已连接') || status.startsWith('串口已连接') || status.startsWith('本地桥已连接') || loopback;
+  const connected = connectionState === 'connected' || loopback;
 
   useEffect(() => {
     if (preset !== 'custom') setUuids(PRESETS[preset]);
@@ -480,22 +541,51 @@ function App() {
       transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket,
       sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback,
       joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme,
-      buttons, sliders, pid, pidGroups, serial: serialSettings, bridge: bridgeSettings,
+      buttons, sliders, pid, lastSentPid, pidGroups, serial: serialSettings, bridge: bridgeSettings,
     });
-  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups, serialSettings, bridgeSettings]);
+  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serialSettings, bridgeSettings]);
 
   useEffect(() => { saveJson(RECORD_KEY, { records }); }, [records]);
 
+  const appendLog = (type, message) => {
+    const safeType = LOG_TYPES.includes(type) ? type : 'SYSTEM';
+    const safeMessage = compactLogText(message);
+    if (!safeMessage) return;
+    setLogs((old) => {
+      const entry = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        ts: Date.now(),
+        type: safeType,
+        message: safeMessage,
+      };
+      return [...old, entry].slice(-MAX_STRUCTURED_LOGS);
+    });
+  };
+
   const appendRx = (text) => {
-    setLastRxAt(Date.now());
+    const nowTime = Date.now();
+    setLastRxAt(nowTime);
+    rxTimestampsRef.current.push(nowTime);
     setRxLog((old) => {
       const next = old + text;
       const size = Number(cacheSize) || 0;
       return size > 0 && next.length > size ? next.slice(next.length - size) : next;
     });
+    appendLog('RX', text);
   };
 
-  const appendTx = (text) => setTxLog((old) => `${old}${text}\n`.slice(-12000));
+  const appendTx = (text, type = 'TX') => {
+    setTxLog((old) => {
+      const next = `${old}${text}\n`;
+      return next.slice(-12000);
+    });
+    appendLog(type, text);
+  };
+
+  const bumpInvalidPacket = (reason, packet = '') => {
+    setErrorPacketCount((count) => count + 1);
+    appendLog('ERROR', `${reason}${packet ? `：${compactLogText(packet, 120)}` : ''}`);
+  };
 
   const smoothRows = (rows, keys) => {
     const win = Math.max(2, Number(plotSettings.smoothWindow) || 3);
@@ -530,18 +620,25 @@ function App() {
         setPlotData([]);
         setLastPlotAt(null);
       } else if ((cmd === 'plot' || cmd === 'p') && !plotPausedRef.current) {
-        const values = parts.slice(1, 11).map(Number).filter(Number.isFinite);
-        if (values.length) {
-          const tms = Date.now() - plotStart.current;
-          const row = { iso: new Date().toISOString(), tms, t: tms / 1000 };
-          values.forEach((v, i) => { row[`CH${i + 1}`] = v; });
-          setLastPlotAt(Date.now());
-          if (recordingRef.current) recordBuffer.current.push(row);
-          setPlotData((old) => {
-            const next = [...old, row];
-            return next.slice(-5000);
-          });
+        const rawValues = parts.slice(1, 11);
+        const values = rawValues.map((value) => Number(value));
+        const invalidIndex = values.findIndex((value) => !Number.isFinite(value));
+        if (!rawValues.length || invalidIndex >= 0) {
+          bumpInvalidPacket('非法 plot 数据包', `[${parts.join(',')}]`);
+          continue;
         }
+        const tms = Date.now() - plotStart.current;
+        const row = { iso: new Date().toISOString(), tms, t: tms / 1000 };
+        values.forEach((v, i) => { row[`CH${i + 1}`] = v; });
+        setLastPlotAt(Date.now());
+        if (recordingRef.current) recordBuffer.current.push(row);
+        setPlotData((old) => {
+          const next = [...old, row];
+          const keep = Math.max(2500, Math.min(12000, (Number(plotSettings.maxPoints) || 1000) * 3));
+          return next.slice(-keep);
+        });
+      } else if (!cmd) {
+        bumpInvalidPacket('空数据包', `[${parts.join(',')}]`);
       }
     }
   };
@@ -549,7 +646,10 @@ function App() {
   const parsePackets = (text) => {
     const { packets, rest, overflow } = extractPacketsFromStream(text, rxPacketBuffer.current, Number(serialSettings.packetBufferSize) || 8192);
     rxPacketBuffer.current = rest;
-    if (overflow) appendTx('接收协议缓存过长，已自动清空不完整数据包');
+    if (overflow) {
+      bumpInvalidPacket('接收协议缓存过长，已自动清空不完整数据包');
+      appendTx('接收协议缓存过长，已自动清空不完整数据包', 'WARN');
+    }
     handlePackets(packets);
   };
 
@@ -564,6 +664,7 @@ function App() {
     const serviceUuid = normalizeUuid(uuids.service);
     const writeUuid = normalizeUuid(uuids.write);
     const notifyUuid = normalizeUuid(uuids.notify || uuids.write);
+    setConnectionState('connecting');
     setStatus('连接 GATT 服务...');
     const server = await device.gatt.connect();
     const service = await server.getPrimaryService(serviceUuid);
@@ -574,42 +675,63 @@ function App() {
     notifyChar.addEventListener('characteristicvaluechanged', onNotify);
     setDeviceName(device.name || '未知设备');
     setConnectedAt(Date.now());
+    setConnectionState('connected');
+    setDisconnectReason('');
     setStatus(`已连接：${device.name || '未知设备'}`);
+    appendTx(`BLE 已连接：${device.name || '未知设备'}`, 'SYSTEM');
   }
 
   const connectBle = async () => {
     if (!navigator.bluetooth) {
+      setConnectionState('error');
       setStatus('当前浏览器不支持 Web Bluetooth，请使用桌面版 Chrome / Edge');
+      appendTx('当前浏览器不支持 Web Bluetooth，请使用桌面版 Chrome / Edge', 'WARN');
       return;
     }
     try {
       intentionallyDisconnected.current = false;
       setTransport('ble');
+      setConnectionState('connecting');
       const serviceUuid = normalizeUuid(uuids.service);
       setStatus('请求蓝牙设备权限...');
       const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [serviceUuid] });
       device.addEventListener('gattserverdisconnected', async () => {
         setConnectedAt(null);
+        setConnectionState('idle');
+        setDisconnectReason(`${device.name || '未知设备'} 已断开`);
         setStatus(`已断开：${device.name || '未知设备'}`);
+        appendTx(`BLE 已断开：${device.name || '未知设备'}`, 'SYSTEM');
         if (!intentionallyDisconnected.current) await safeStop();
         if (autoReconnect && !intentionallyDisconnected.current) {
+          setConnectionState('connecting');
           setStatus(`已断开，3 秒后尝试重连：${device.name || '未知设备'}`);
-          setTimeout(() => attachBleDevice(device).catch((err) => setStatus(`自动重连失败：${err.message}`)), 3000);
+          setTimeout(() => attachBleDevice(device).catch((err) => {
+            setConnectionState('error');
+            setDisconnectReason(err.message);
+            setStatus(`自动重连失败：${err.message}`);
+            appendTx(`BLE 自动重连失败：${err.message}`, 'ERROR');
+          }), 3000);
         }
       });
       await attachBleDevice(device);
     } catch (err) {
+      setConnectionState('error');
+      setDisconnectReason(err.message);
       setStatus(`BLE 连接失败：${err.message}`);
+      appendTx(`BLE 连接失败：${err.message}`, 'ERROR');
     }
   };
 
   const connectSerial = async () => {
     if (!navigator.serial) {
+      setConnectionState('error');
       setStatus('当前浏览器不支持 Web Serial，请使用桌面版 Chrome / Edge');
+      appendTx('当前浏览器不支持 Web Serial，请使用桌面版 Chrome / Edge', 'WARN');
       return;
     }
     try {
       setTransport('serial');
+      setConnectionState('connecting');
       intentionallyDisconnected.current = false;
       rxPacketBuffer.current = '';
       let port = null;
@@ -630,10 +752,16 @@ function App() {
       serialRef.current = { port, writer, reader: null, keepReading: true };
       setDeviceName('Web Serial 设备');
       setConnectedAt(Date.now());
+      setConnectionState('connected');
+      setDisconnectReason('');
       setStatus(`串口已连接：${options.baudRate}bps / ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`);
+      appendTx(`Web Serial 已连接：${options.baudRate}bps`, 'SYSTEM');
       readSerialLoop(port);
     } catch (err) {
+      setConnectionState('error');
+      setDisconnectReason(err.message);
       setStatus(`串口连接失败：${err.message}`);
+      appendTx(`串口连接失败：${err.message}`, 'ERROR');
     }
   };
 
@@ -652,7 +780,12 @@ function App() {
           }
         }
       } catch (err) {
-        if (serialRef.current.keepReading) setStatus(`串口读取失败：${err.message}`);
+        if (serialRef.current.keepReading) {
+          setConnectionState('error');
+          setDisconnectReason(err.message);
+          setStatus(`串口读取失败：${err.message}`);
+          appendTx(`串口读取失败：${err.message}`, 'ERROR');
+        }
       } finally {
         reader.releaseLock();
       }
@@ -662,6 +795,7 @@ function App() {
   const connectBridge = async () => {
     try {
       setTransport('bridge');
+      setConnectionState('connecting');
       intentionallyDisconnected.current = false;
       rxPacketBuffer.current = '';
       setStatus('正在连接本地串口桥...');
@@ -671,7 +805,10 @@ function App() {
       ws.onopen = () => {
         setDeviceName('Orange Pi 本地串口桥');
         setConnectedAt(Date.now());
+        setConnectionState('connected');
+        setDisconnectReason('');
         setStatus('本地桥已连接');
+        appendTx(`Orange Pi Bridge 已连接：${bridgeSettings.url || DEFAULT_BRIDGE.url}`, 'SYSTEM');
       };
       ws.onmessage = async (event) => {
         let rawText = '';
@@ -683,7 +820,7 @@ function App() {
               rawText = msg.text || '';
               if (msg.hex) appendRx(rxModeRef.current === 'hex' ? `${msg.hex} ` : rawText);
             } else if (msg.type === 'status') {
-              appendTx(`本地桥：${msg.message}`);
+              appendTx(`本地桥：${msg.message}`, 'SYSTEM');
               return;
             }
           } catch {
@@ -704,12 +841,23 @@ function App() {
       ws.onclose = () => {
         bridgeRef.current.ws = null;
         setConnectedAt(null);
+        setConnectionState('idle');
+        setDisconnectReason('Orange Pi Bridge 已断开');
         if (!intentionallyDisconnected.current) safeStop().catch(() => {});
         setStatus('本地桥已断开');
+        appendTx('Orange Pi Bridge 已断开', intentionallyDisconnected.current ? 'SYSTEM' : 'WARN');
       };
-      ws.onerror = () => setStatus('本地桥连接失败，请确认 Orange Pi 后端服务已启动');
+      ws.onerror = () => {
+        setConnectionState('error');
+        setDisconnectReason('请确认 Orange Pi 后端服务已启动');
+        setStatus('本地桥连接失败，请确认 Orange Pi 后端服务已启动');
+        appendTx('本地桥连接失败，请确认 Orange Pi 后端服务已启动', 'ERROR');
+      };
     } catch (err) {
+      setConnectionState('error');
+      setDisconnectReason(err.message);
       setStatus(`本地桥连接失败：${err.message}`);
+      appendTx(`本地桥连接失败：${err.message}`, 'ERROR');
     }
   };
 
@@ -733,7 +881,10 @@ function App() {
     bridgeRef.current = { ws: null };
     rxPacketBuffer.current = '';
     setConnectedAt(null);
+    setConnectionState('idle');
+    setDisconnectReason('用户主动断开');
     setStatus('未连接');
+    appendTx('连接已断开', 'SYSTEM');
   };
 
   const writeBytes = async (bytes) => {
@@ -773,8 +924,10 @@ function App() {
         parsePackets(text);
       }
       if (!silent) appendTx(mode === 'hex' ? bytesToHex(bytes) : value.replace(/\r/g, '\\r').replace(/\n/g, '\\n'));
+      return { ok: true };
     } catch (err) {
-      appendTx(`发送失败：${err.message}`);
+      appendTx(`发送失败：${err.message}`, 'ERROR');
+      return { ok: false, error: err };
     }
   };
 
@@ -784,10 +937,11 @@ function App() {
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     packetTimer.current = Date.now();
     const packet = makePacket(parts, shortPacket) + (packetNewline ? newlineValue : '');
-    await sendRaw(packet, 'text', silent);
+    return sendRaw(packet, 'text', silent);
   };
 
   async function safeStop() {
+    if (!connected) return;
     await sendPacket(['joystick', 0, 0, 0, 0], true);
   }
 
@@ -797,7 +951,7 @@ function App() {
     setRightJoy({ x: 0, y: 0 });
     await sendPacket(['key', 'emergency', 'down']);
     await safeStop();
-    appendTx('已触发急停：发送 emergency + joystick 回中');
+    appendTx('已触发急停：发送 emergency + joystick 回中', 'WARN');
   };
 
   useEffect(() => {
@@ -863,6 +1017,7 @@ function App() {
     plotData.forEach((row) => Object.keys(row).forEach((k) => { if (k.startsWith('CH')) keys.add(k); }));
     return [...keys].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
   }, [plotData]);
+  const chartKeys = plotKeys.length ? plotKeys : ['CH1', 'CH2', 'CH3', 'CH4'];
 
   const visibleRowsRaw = useMemo(() => {
     const rows = plotSettings.autoScroll ? plotData.slice(-Math.max(10, Number(plotSettings.maxPoints) || 300)) : plotData;
@@ -886,17 +1041,17 @@ function App() {
     return out;
   }, [plotData, plotKeys]);
 
-  const clearPlot = () => { plotStart.current = Date.now(); setPlotData([]); setLastPlotAt(null); };
-  const applySpeedTemplate = () => setCurveNames((old) => ({ ...old, CH1: '当前速度', CH2: '目标速度', CH3: 'PWM输出', CH4: '速度误差' }));
+  const clearPlot = () => { plotStart.current = Date.now(); setPlotData([]); setLastPlotAt(null); appendTx('曲线数据已清空', 'SYSTEM'); };
+  const applySpeedTemplate = () => setCurveNames((old) => ({ ...old, CH1: 'target', CH2: 'current', CH3: 'error', CH4: 'pwm' }));
 
-  const startRecord = () => { recordBuffer.current = []; setRecording(true); appendTx(`开始记录：${recordName}`); };
+  const startRecord = () => { recordBuffer.current = []; setRecording(true); appendTx(`开始记录：${recordName}`, 'SYSTEM'); };
   const stopRecord = () => {
     setRecording(false);
     const rows = recordBuffer.current.slice();
-    if (!rows.length) { appendTx('记录为空，未保存'); return; }
+    if (!rows.length) { appendTx('记录为空，未保存', 'WARN'); return; }
     const rec = { id: Date.now(), name: recordName || '未命名记录', createdAt: new Date().toISOString(), rows, curveNames };
     setRecords((old) => [rec, ...old].slice(0, 20));
-    appendTx(`已保存记录：${rec.name}，${rows.length} 点`);
+    appendTx(`已保存记录：${rec.name}，${rows.length} 点`, 'SYSTEM');
   };
   const replayRecord = (rec) => { plotStart.current = Date.now(); setCurveNames(rec.curveNames || curveNames); setPlotData(rec.rows || []); setTab('workspace'); };
 
@@ -908,46 +1063,132 @@ function App() {
       return next;
     });
   };
-  const updatePidValue = (key, value) => {
-    setPid((old) => ({ ...old, [key]: Number(value) }));
+  const setPidDraftValue = (key, value) => {
+    setPidDrafts((old) => ({ ...old, [key]: String(value ?? '') }));
+  };
+  const setPidError = (key, reason) => {
+    setPidErrors((old) => {
+      const next = { ...old };
+      if (reason) next[key] = reason;
+      else delete next[key];
+      return next;
+    });
+  };
+  const updatePidValue = (key, raw) => {
+    setPidDraftValue(key, raw);
+    const parsed = normalizePidValue(key, raw, pid[key]);
+    if (!parsed.ok) {
+      setPidError(key, parsed.reason);
+      markPidDirty(key);
+      return;
+    }
+    setPidError(key, '');
+    setPid((old) => ({ ...old, [key]: parsed.value }));
     markPidDirty(key);
+  };
+  const normalizePidDraft = (key) => {
+    if (pidErrors[key]) setPidDraftValue(key, pid[key]);
   };
   const changePidValue = (key, delta) => {
-    setPid((old) => ({ ...old, [key]: Number(old[key] || 0) + delta }));
+    const limits = PID_LIMITS[key] || { min: -999999, max: 999999 };
+    const next = clamp(Number(pid[key] || 0) + delta, limits.min, limits.max);
+    setPid((old) => ({ ...old, [key]: next }));
+    setPidDraftValue(key, next);
+    setPidError(key, '');
     markPidDirty(key);
   };
-  const sendSlider = async (name, value) => sendPacket(['slider', name, value]);
-  const sendPidField = async (field) => {
-    await sendSlider(field.sendName, pid[field.key]);
-    clearPidDirty([field.key]);
-    appendTx(`已发送参数：${field.label}=${pid[field.key]}`);
+  const sendSlider = async (name, value) => {
+    if (!connected) {
+      const err = new Error('未连接设备，参数未发送');
+      appendTx(err.message, 'WARN');
+      return { ok: false, error: err };
+    }
+    return sendPacket(['slider', name, value]);
   };
+  const sendPidFields = async (fields) => {
+    if (!fields.length) {
+      appendTx('没有未发送的参数改动', 'SYSTEM');
+      return;
+    }
+    if (!connected) {
+      appendTx('未连接设备，参数发送已阻止', 'WARN');
+      return;
+    }
+    for (const field of fields) {
+      const parsed = normalizePidValue(field.key, pidDrafts[field.key] ?? pid[field.key], pid[field.key]);
+      if (!parsed.ok) {
+        setPidError(field.key, parsed.reason);
+        appendTx(`${field.label} 参数非法：${parsed.reason}`, 'ERROR');
+        continue;
+      }
+      setPidSendState((old) => ({ ...old, [field.key]: 'sending' }));
+      const result = await sendSlider(field.sendName, parsed.value);
+      if (result.ok) {
+        setPid((old) => ({ ...old, [field.key]: parsed.value }));
+        setLastSentPid((old) => ({ ...old, [field.key]: parsed.value }));
+        clearPidDirty([field.key]);
+        setPidSendState((old) => ({ ...old, [field.key]: 'ok' }));
+        appendTx(`参数已同步：${field.label}=${parsed.value}`, 'SYSTEM');
+      } else {
+        setPidSendState((old) => ({ ...old, [field.key]: 'error' }));
+        appendTx(`${field.label} 发送失败：${result.error?.message || '未知错误'}`, 'ERROR');
+      }
+    }
+  };
+  const sendPidField = async (field) => sendPidFields([field]);
   const sendPidGroup = async (groupId) => {
     const fields = PID_FIELDS.filter((field) => field.group === groupId);
-    for (const field of fields) await sendSlider(field.sendName, pid[field.key]);
-    clearPidDirty(fields.map((field) => field.key));
-    appendTx(`已发送 ${fields.length} 项参数`);
+    await sendPidFields(fields);
+  };
+  const sendDirtyPid = async () => {
+    const fields = PID_FIELDS.filter((field) => pendingPidKeys.has(field.key));
+    await sendPidFields(fields);
   };
   const sendAllPid = async () => {
-    for (const field of PID_FIELDS) await sendSlider(field.sendName, pid[field.key]);
-    clearPidDirty(PID_FIELDS.map((field) => field.key));
-    appendTx(`已发送 ${PID_FIELDS.length} 项 PID 参数`);
+    await sendPidFields(PID_FIELDS);
+  };
+  const revertPidField = (field) => {
+    const value = Number(lastSentPid[field.key] ?? DEFAULT_PID[field.key] ?? 0);
+    setPid((old) => ({ ...old, [field.key]: value }));
+    setPidDraftValue(field.key, value);
+    setPidError(field.key, '');
+    setPidSendState((old) => ({ ...old, [field.key]: 'idle' }));
+    clearPidDirty([field.key]);
+    appendTx(`已撤销到上次发送值：${field.label}=${value}`, 'SYSTEM');
+  };
+  const revertAllPid = () => {
+    const nextPid = { ...pid };
+    PID_FIELDS.forEach((field) => {
+      nextPid[field.key] = Number(lastSentPid[field.key] ?? DEFAULT_PID[field.key] ?? 0);
+    });
+    setPid(nextPid);
+    setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key])])));
+    setPidErrors({});
+    setPidSendState({});
+    setPendingPidKeys(new Set());
+    appendTx('全部参数已恢复到上次发送状态', 'SYSTEM');
   };
   const savePidGroup = () => {
     const group = { ...pid, id: Date.now(), savedAt: new Date().toISOString() };
     setPidGroups((old) => [group, ...old.filter((g) => g.groupName !== group.groupName)].slice(0, 12));
-    appendTx(`已保存参数组：${group.groupName || '未命名参数组'}`);
+    appendTx(`已保存参数组：${group.groupName || '未命名参数组'}`, 'SYSTEM');
   };
 
   const exportConfig = () => {
-    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, pidGroups, serial: serialSettings, bridge: bridgeSettings };
+    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serial: serialSettings, bridge: bridgeSettings };
     downloadTextFile(`bluetooth_tuning_config_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2), 'application/json;charset=utf-8');
   };
   const importConfig = async (file) => {
     if (!file) return;
-    const text = await file.text();
-    const cfg = { ...DEFAULT_CONFIG, ...JSON.parse(text) };
-    setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid({ ...DEFAULT_PID, ...(cfg.pid || {}) }); setPidGroups(cfg.pidGroups || []); setSerialSettings({ ...DEFAULT_SERIAL, ...(cfg.serial || {}) }); setBridgeSettings({ ...DEFAULT_BRIDGE, ...(cfg.bridge || {}) });
+    try {
+      const text = await file.text();
+      const cfg = { ...DEFAULT_CONFIG, ...JSON.parse(text) };
+      const nextPid = { ...DEFAULT_PID, ...(cfg.pid || {}) };
+      setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid(nextPid); setLastSentPid({ ...nextPid, ...(cfg.lastSentPid || {}) }); setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key] ?? 0)]))); setPidErrors({}); setPendingPidKeys(new Set()); setPidGroups(cfg.pidGroups || []); setSerialSettings({ ...DEFAULT_SERIAL, ...(cfg.serial || {}) }); setBridgeSettings({ ...DEFAULT_BRIDGE, ...(cfg.bridge || {}) });
+      appendTx('配置已导入', 'SYSTEM');
+    } catch (err) {
+      appendTx(`配置导入失败：${err.message}`, 'ERROR');
+    }
   };
   const resetConfig = () => {
     if (!confirm('确认恢复默认配置？当前浏览器保存的界面设置会被覆盖。')) return;
@@ -957,33 +1198,89 @@ function App() {
 
   const requestFullscreen = () => document.documentElement.requestFullscreen?.();
 
+  const connectCurrent = () => (transport === 'serial' ? connectSerial() : transport === 'bridge' ? connectBridge() : connectBle());
+  const reconnectCurrent = async () => {
+    appendTx('正在重连当前通道...', 'SYSTEM');
+    await disconnect();
+    window.setTimeout(connectCurrent, 120);
+  };
+  const clearRuntimeData = () => {
+    plotStart.current = Date.now();
+    rxTimestampsRef.current = [];
+    setRxFrequency(0);
+    setErrorPacketCount(0);
+    setRxLog('');
+    setTxLog('');
+    setLogs([]);
+    setPlotData([]);
+    setDisplayItems([]);
+    setLastRxAt(null);
+    setLastPlotAt(null);
+  };
+  const visibleLogs = useMemo(
+    () => logs.filter((entry) => logFilters[entry.type] !== false),
+    [logs, logFilters],
+  );
+  useEffect(() => {
+    if (!logAutoscroll) return;
+    const el = logConsoleRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [visibleLogs, logAutoscroll]);
+  const copyVisibleLogs = async () => {
+    const text = visibleLogs.map((entry) => `${new Date(entry.ts).toLocaleTimeString()} [${entry.type}] ${entry.message}`).join('\n');
+    try {
+      await navigator.clipboard?.writeText(text);
+      appendTx('日志已复制到剪贴板', 'SYSTEM');
+    } catch (err) {
+      appendTx(`复制日志失败：${err.message}`, 'ERROR');
+    }
+  };
+
   const connectionModeLabel = loopback ? '环回' : transport === 'serial' ? 'Web Serial' : transport === 'bridge' ? '本地桥' : 'BLE';
   const dataActive = connected && lastRxAt && now - lastRxAt < 3000;
   const plotActive = lastPlotAt && now - lastPlotAt < 3000;
   const plotTimeout = connected && lastPlotAt && now - lastPlotAt > 5000;
   const dirtyPidCount = pendingPidKeys.size;
   const emergencyActive = emergencyAt && now - emergencyAt < 8000;
-  const connectionLabel = !connected ? '未连接' : dataActive ? '已连接，正在收包' : lastRxAt ? '已连接，等待数据' : '已连接，未收到数据';
+  const connectionLabel = loopback
+    ? 'Loopback 模拟'
+    : connectionState === 'connecting'
+    ? '连接中'
+    : connectionState === 'error'
+      ? '错误'
+      : !connected
+        ? '未连接'
+        : dataActive
+          ? '已连接，正在收包'
+          : lastRxAt
+            ? '已连接，等待数据'
+            : '已连接，未收到数据';
+  const connectionTone = connectionState === 'error' ? 'bad' : connected ? dataActive ? 'ok' : 'warn' : connectionState === 'connecting' ? 'warn' : 'bad';
 
   const renderStatus = () => (
     <Card className="connection statusbar-workbench">
       <div className="statusbar-main">
-        <span className={`status-pill ${connected ? dataActive ? 'ok' : 'warn' : 'bad'}`}>
+        <span className={`status-pill ${connectionTone}`}>
           <span className="status-dot" />{connectionLabel}
         </span>
-        <span className="status-device">{deviceName || '未选择设备'}</span>
+        <span className="status-device">{deviceName || disconnectReason || '未选择设备'}</span>
       </div>
       <div className="statusbar-grid">
         <div><span>方式</span><b>{connectionModeLabel}</b></div>
-        <div><span>连接时长</span><b>{formatDuration(connectedAt ? now - connectedAt : 0)}</b></div>
-        <div><span>最近收包</span><b>{formatAge(lastRxAt, now)}</b></div>
-        <div><span>曲线更新</span><b className={plotTimeout ? 'warn-text' : ''}>{formatAge(lastPlotAt, now)}</b></div>
+        <div><span>连接状态</span><b>{connectionLabel}</b></div>
+        <div><span>最后一包</span><b>{lastRxAt ? `${formatClock(lastRxAt)} / ${formatAge(lastRxAt, now)}` : '暂无'}</b></div>
+        <div><span>接收频率</span><b>{rxFrequency.toFixed(1)} Hz</b></div>
+        <div><span>异常包</span><b className={errorPacketCount ? 'danger-text' : ''}>{errorPacketCount}</b></div>
         <div><span>参数状态</span><b className={dirtyPidCount ? 'warn-text' : ''}>{dirtyPidCount ? `${dirtyPidCount} 项未发送` : '已同步'}</b></div>
+        <div><span>曲线更新</span><b className={plotTimeout ? 'warn-text' : ''}>{formatAge(lastPlotAt, now)}</b></div>
+        <div><span>连接时长</span><b>{formatDuration(connectedAt ? now - connectedAt : 0)}</b></div>
         <div><span>急停</span><b className={emergencyActive ? 'danger-text' : ''}>{emergencyActive ? '刚刚触发' : '待命'}</b></div>
       </div>
       <div className="connection-actions">
-        <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
-        <Button onClick={disconnect}><Cable size={16} />断开</Button>
+        <Button variant="primary" disabled={connectionState === 'connecting'} onClick={connectCurrent}>{transport === 'serial' ? <Usb size={16} /> : transport === 'bridge' ? <Cable size={16} /> : <Bluetooth size={16} />}连接</Button>
+        <Button disabled={!connected && connectionState !== 'error'} onClick={disconnect}><Cable size={16} />断开</Button>
+        <Button onClick={reconnectCurrent}><RefreshCw size={16} />重连</Button>
+        <Button onClick={clearRuntimeData}><Trash2 size={16} />清空数据</Button>
         <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
       </div>
     </Card>
@@ -1063,7 +1360,7 @@ function App() {
       <div className="grid3">
         <label>显示模式<select value={plotSettings.mode} onChange={(e) => setPlotSettings({ ...plotSettings, mode: e.target.value })}><option value="single">单图模式</option><option value="split">分图模式</option></select></label>
         <label>Y 轴<select value={plotSettings.yAxisMode} onChange={(e) => setPlotSettings({ ...plotSettings, yAxisMode: e.target.value })}><option value="auto">自动范围</option><option value="fixed">固定范围</option></select></label>
-        <MiniInput label="最近点数" type="number" value={plotSettings.maxPoints} onChange={(v) => setPlotSettings({ ...plotSettings, maxPoints: v })} />
+        <label>最大保留点数<select value={plotSettings.maxPoints} onChange={(e) => setPlotSettings({ ...plotSettings, maxPoints: Number(e.target.value) })}><option value={500}>500</option><option value={1000}>1000</option><option value={2000}>2000</option></select></label>
       </div>
       <div className="grid3">
         <MiniInput label="Y 最小" type="number" value={plotSettings.yMin} onChange={(v) => setPlotSettings({ ...plotSettings, yMin: v })} />
@@ -1079,10 +1376,10 @@ function App() {
       {!compact && renderPlotControls()}
       <Card>
         <SectionTitle icon={Activity} title="实时曲线" right={<span className="hint">数据点：{plotData.length}，显示：{visibleRows.length}</span>} />
-        <PlotChart rows={visibleRows} keys={plotKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} compact={compact} />
+        <PlotChart rows={visibleRows} keys={chartKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} compact={compact} />
         {!compact && <>
           <div className="plot-channel-panel">
-            {plotKeys.map((key, i) => {
+            {chartKeys.map((key, i) => {
               const defaultName = DEFAULT_CONFIG.curveNames[key] || key;
               const currentName = curveNames[key] ?? defaultName;
               return (
@@ -1110,7 +1407,7 @@ function App() {
             })}
           </div>
           <div className="stat-grid">
-            {plotKeys.map((key) => <div className="stat-card" key={key}><b>{curveNames[key] || key}</b><span>最新：{stats[key]?.latest?.toFixed?.(3) ?? '-'}</span><span>最大：{stats[key]?.max?.toFixed?.(3) ?? '-'}</span><span>最小：{stats[key]?.min?.toFixed?.(3) ?? '-'}</span><span>平均：{stats[key]?.avg?.toFixed?.(3) ?? '-'}</span></div>)}
+            {chartKeys.map((key) => <div className="stat-card" key={key}><b>{curveNames[key] || key}</b><span>最新：{stats[key]?.latest?.toFixed?.(3) ?? '-'}</span><span>最大：{stats[key]?.max?.toFixed?.(3) ?? '-'}</span><span>最小：{stats[key]?.min?.toFixed?.(3) ?? '-'}</span><span>平均：{stats[key]?.avg?.toFixed?.(3) ?? '-'}</span></div>)}
           </div>
         </>}
       </Card>
@@ -1123,10 +1420,31 @@ function App() {
       <div className="compact-connect-meta">
         <span>方式</span><b>{connectionModeLabel}</b>
         <span>设备</span><b>{deviceName || '未选择'}</b>
+        <span>桥地址</span><b>{bridgeSettings.url || DEFAULT_BRIDGE.url}</b>
+        <span>Loopback</span><b>{loopback ? '模拟测试' : '真实链路'}</b>
+      </div>
+      <label>连接方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="serial">Web Serial / USB-TTL</option><option value="bridge">Orange Pi Bridge</option><option value="ble">BLE 蓝牙</option></select></label>
+      {transport === 'serial' && <div className="inline-settings-grid">
+        <MiniInput label="波特率" type="number" value={serialSettings.baudRate} onChange={(v) => setSerialSettings({ ...serialSettings, baudRate: v })} />
+        <label>校验<select value={serialSettings.parity} onChange={(e) => setSerialSettings({ ...serialSettings, parity: e.target.value })}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
+      </div>}
+      {transport === 'bridge' && <label>Orange Pi Bridge<input className="mono" value={bridgeSettings.url} onChange={(e) => setBridgeSettings({ ...bridgeSettings, url: e.target.value })} /></label>}
+      {transport === 'ble' && <label>BLE 预设<select value={preset} onChange={(e) => setPreset(e.target.value)}>{Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>}
+      <label className="check with-title"><span>Loopback 测试模式</span><input type="checkbox" checked={loopback} onChange={(e) => setLoopback(e.target.checked)} /></label>
+      <div className="row mt">
+        <Button variant="primary" disabled={connectionState === 'connecting'} onClick={connectCurrent}>连接</Button>
+        <Button onClick={disconnect}>断开</Button>
+        <Button onClick={reconnectCurrent}><RefreshCw size={14} />重连</Button>
+      </div>
+      <div className="protocol-hint">
+        <b>协议提示</b>
+        <code>[slider,Kp,1.20]</code>
+        <code>[plot,target,current,error,pwm]</code>
+        <span>Loopback 只用于页面模拟，不代表真实硬件在线。</span>
       </div>
       <div className="row mt">
-        <Button variant="primary" onClick={transport === 'serial' ? connectSerial : transport === 'bridge' ? connectBridge : connectBle}>连接</Button>
-        <Button onClick={disconnect}>断开</Button>
+        <Button onClick={exportConfig}><FileDown size={14} />导出配置</Button>
+        <label className="file-btn compact-file"><FileUp size={14} />导入<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label>
       </div>
     </Card>
   );
@@ -1135,33 +1453,82 @@ function App() {
     <Card className="workspace-card pid-overview-card">
       <SectionTitle icon={SlidersHorizontal} title="参数概览" right={dirtyPidCount ? <span className="dirty-badge">{dirtyPidCount} 未发送</span> : <span className="status-pill tiny ok">已同步</span>} />
       <div className="pid-overview-grid">
-        {PID_FIELDS.map((field) => <div className={pendingPidKeys.has(field.key) ? 'is-dirty' : ''} key={field.key}><span>{field.label}</span><b>{pid[field.key]}</b></div>)}
+        {PID_FIELDS.map((field) => {
+          const current = Number(pid[field.key]);
+          const sent = Number(lastSentPid[field.key]);
+          const diff = current - sent;
+          return (
+            <div className={pendingPidKeys.has(field.key) ? 'is-dirty' : ''} key={field.key}>
+              <span>{field.label}</span>
+              <b>{formatNumber(current)}</b>
+              <em>已发 {formatNumber(sent)} / Δ {formatNumber(diff)}</em>
+            </div>
+          );
+        })}
       </div>
     </Card>
   );
 
   const renderPidFieldRow = (field) => {
     const dirty = pendingPidKeys.has(field.key);
+    const limits = PID_LIMITS[field.key] || { min: -1000, max: 1000, step: 0.01 };
+    const current = Number(pid[field.key]);
+    const sent = Number(lastSentPid[field.key]);
+    const diff = current - sent;
+    const invalid = pidErrors[field.key];
+    const sendState = pidSendState[field.key];
+    const sendDisabled = !connected || !!invalid || sendState === 'sending';
     return (
       <div className={`pid-field-row ${dirty ? 'is-dirty' : ''}`} key={field.key}>
-        <b>{field.label}</b>
+        <div className="pid-field-title">
+          <b>{field.label}</b>
+          <span>{field.sendName}</span>
+        </div>
+        <input
+          className="pid-number-input"
+          inputMode="decimal"
+          value={pidDrafts[field.key] ?? String(pid[field.key] ?? '')}
+          onChange={(e) => updatePidValue(field.key, e.target.value)}
+          onBlur={() => normalizePidDraft(field.key)}
+        />
+        <input
+          className="pid-range"
+          type="range"
+          min={limits.min}
+          max={limits.max}
+          step={limits.step}
+          value={Number.isFinite(current) ? clamp(current, limits.min, limits.max) : limits.min}
+          onChange={(e) => updatePidValue(field.key, e.target.value)}
+        />
         <div className="pid-step-buttons">
           <Button onClick={() => changePidValue(field.key, -Number(pid.stepLarge || 10))}>-{pid.stepLarge}</Button>
           <Button onClick={() => changePidValue(field.key, -Number(pid.stepSmall || 1))}>-{pid.stepSmall}</Button>
-        </div>
-        <input type="number" value={pid[field.key]} onChange={(e) => updatePidValue(field.key, e.target.value)} />
-        <div className="pid-step-buttons">
           <Button onClick={() => changePidValue(field.key, Number(pid.stepSmall || 1))}>+{pid.stepSmall}</Button>
           <Button onClick={() => changePidValue(field.key, Number(pid.stepLarge || 10))}>+{pid.stepLarge}</Button>
         </div>
-        <Button variant={dirty ? 'primary' : 'secondary'} onClick={() => sendPidField(field)}><Send size={14} />发送</Button>
+        <div className="pid-value-meta">
+          <span>编辑 <b>{formatNumber(current)}</b></span>
+          <span>已发 <b>{formatNumber(sent)}</b></span>
+          <span className={dirty ? 'warn-text' : ''}>差值 <b>{formatNumber(diff)}</b></span>
+        </div>
+        <div className="pid-row-actions">
+          <Button disabled={sendDisabled} variant={dirty ? 'primary' : 'secondary'} onClick={() => sendPidField(field)}><Send size={14} />{sendState === 'sending' ? '发送中' : '单发'}</Button>
+          <Button disabled={!dirty} onClick={() => revertPidField(field)}><RotateCcw size={14} />撤销</Button>
+        </div>
+        <div className={`pid-sync-state ${invalid ? 'bad' : sendState === 'error' ? 'bad' : dirty ? 'dirty' : 'ok'}`}>
+          {invalid || (sendState === 'error' ? '发送失败' : dirty ? '未发送' : sendState === 'sending' ? '发送中' : '已同步')}
+        </div>
       </div>
     );
   };
 
   const renderPidWorkbench = () => (
     <Card className="workspace-card pid-workbench-card">
-      <SectionTitle icon={SlidersHorizontal} title="PID 参数工作台" right={<Button variant="primary" onClick={sendAllPid}><Send size={16} />发送全部</Button>} />
+      <SectionTitle
+        icon={SlidersHorizontal}
+        title="PID 参数工作台"
+        right={<div className="row pid-header-actions"><Button disabled={!connected || dirtyPidCount === 0} variant="primary" onClick={sendDirtyPid}><Send size={16} />发送改动</Button><Button disabled={!connected} onClick={sendAllPid}>发送全部</Button><Button disabled={dirtyPidCount === 0} onClick={revertAllPid}><RotateCcw size={16} />恢复</Button></div>}
+      />
       <MiniInput label="参数组名称" value={pid.groupName} onChange={(v) => setPid({ ...pid, groupName: v })} />
       <div className="grid2 pid-step-config"><MiniInput label="小步进" type="number" value={pid.stepSmall} onChange={(v) => setPid({ ...pid, stepSmall: v })} /><MiniInput label="大步进" type="number" value={pid.stepLarge} onChange={(v) => setPid({ ...pid, stepLarge: v })} /></div>
       <div className="pid-section-list">
@@ -1170,7 +1537,7 @@ function App() {
           const hasDirty = fields.some((field) => pendingPidKeys.has(field.key));
           return (
             <section className={`pid-section ${hasDirty ? 'is-dirty' : ''}`} key={group.id}>
-              <div className="pid-section-head"><h3>{group.title}</h3>{hasDirty && <span>有未发送改动</span>}<Button onClick={() => sendPidGroup(group.id)}>发送本组</Button></div>
+              <div className="pid-section-head"><h3>{group.title}</h3>{hasDirty && <span>有未发送改动</span>}<Button disabled={!connected} onClick={() => sendPidGroup(group.id)}>发送本组</Button></div>
               <div className="pid-section-body">{fields.map(renderPidFieldRow)}</div>
             </section>
           );
@@ -1183,7 +1550,8 @@ function App() {
     <Card className="workspace-card quick-actions-card">
       <SectionTitle icon={Keyboard} title="快捷动作" />
       <div className="quick-actions-grid">
-        <Button variant="primary" onClick={sendAllPid}><Send size={16} />发送全部 PID</Button>
+        <Button disabled={!connected || dirtyPidCount === 0} variant="primary" onClick={sendDirtyPid}><Send size={16} />发送改动</Button>
+        <Button disabled={dirtyPidCount === 0} onClick={revertAllPid}><RotateCcw size={16} />恢复参数</Button>
         <Button onClick={savePidGroup}><Save size={16} />保存参数组</Button>
         <Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>
         <Button onClick={clearPlot}><Trash2 size={16} />清空曲线</Button>
@@ -1198,7 +1566,7 @@ function App() {
       <SectionTitle icon={Save} title="已保存参数组" right={<Button onClick={savePidGroup}>保存当前</Button>} />
       <div className="group-list compact-groups">
         {pidGroups.length === 0 && <p className="hint">暂无已保存参数组。</p>}
-        {pidGroups.map((g) => <div className="group-row compact" key={g.id || g.groupName}><span><b>{g.groupName}</b><em>Kp={g.kp} Ki={g.ki} Kd={g.kd} Target={g.targetSpeed}</em></span><Button onClick={() => { setPid({ ...DEFAULT_PID, ...g }); setPendingPidKeys(new Set(PID_FIELDS.map((field) => field.key))); }}>载入</Button><Button onClick={() => setPidGroups(pidGroups.filter((x) => x !== g))}><Trash2 size={14} /></Button></div>)}
+        {pidGroups.map((g) => <div className="group-row compact" key={g.id || g.groupName}><span><b>{g.groupName}</b><em>Kp={g.kp} Ki={g.ki} Kd={g.kd} Target={g.targetSpeed}</em></span><Button onClick={() => { const nextPid = { ...DEFAULT_PID, ...g }; setPid(nextPid); setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key] ?? 0)]))); setPidErrors({}); setPendingPidKeys(new Set(PID_FIELDS.map((field) => field.key))); appendTx(`已加载参数组：${g.groupName || '未命名参数组'}`, 'SYSTEM'); }}>载入</Button><Button onClick={() => { setPidGroups(pidGroups.filter((x) => x !== g)); appendTx(`已删除参数组：${g.groupName || '未命名参数组'}`, 'SYSTEM'); }}><Trash2 size={14} /></Button></div>)}
       </div>
     </Card>
   );
@@ -1211,7 +1579,7 @@ function App() {
         <Button onClick={clearPlot}><Trash2 size={16} />清空</Button>
         <label className="toolbar-select">模式<select value={plotSettings.mode} onChange={(e) => setPlotSettings({ ...plotSettings, mode: e.target.value })}><option value="single">单图</option><option value="split">分图</option></select></label>
         <label className="toolbar-select">Y轴<select value={plotSettings.yAxisMode} onChange={(e) => setPlotSettings({ ...plotSettings, yAxisMode: e.target.value })}><option value="auto">自动Y</option><option value="fixed">固定Y</option></select></label>
-        <MiniInput label="最近点数" type="number" value={plotSettings.maxPoints} onChange={(v) => setPlotSettings({ ...plotSettings, maxPoints: v })} />
+        <label className="toolbar-select">保留点数<select value={plotSettings.maxPoints} onChange={(e) => setPlotSettings({ ...plotSettings, maxPoints: Number(e.target.value) })}><option value={500}>500</option><option value={1000}>1000</option><option value={2000}>2000</option></select></label>
         <Button onClick={() => exportPlotCsv(plotData, plotKeys, curveNames)}><Download size={16} />CSV</Button>
       </div>
       <details className="plot-more-settings">
@@ -1224,14 +1592,13 @@ function App() {
 
   const renderMainPlotCard = () => (
     <Card className="plot-main-card">
-      <PlotChart rows={visibleRows} keys={plotKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} />
+      <PlotChart rows={visibleRows} keys={chartKeys} names={curveNames} visible={curveVisible} colors={PLOT_COLORS} settings={plotSettings} />
     </Card>
   );
 
   const renderPlotStatsStrip = () => (
     <div className="plot-stats-strip">
-      {plotKeys.length === 0 && <Card className="plot-stat-mini empty">等待 [plot,...] 数据</Card>}
-      {plotKeys.map((key) => <div className="plot-stat-mini" key={key}><b>{curveNames[key] || key}</b><span>最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span><span>最大 {stats[key]?.max?.toFixed?.(2) ?? '-'}</span><span>最小 {stats[key]?.min?.toFixed?.(2) ?? '-'}</span><span>均值 {stats[key]?.avg?.toFixed?.(2) ?? '-'}</span></div>)}
+      {chartKeys.map((key) => <div className="plot-stat-mini" key={key}><b>{curveNames[key] || key}</b><span>最新 {stats[key]?.latest?.toFixed?.(2) ?? '-'}</span><span>最大 {stats[key]?.max?.toFixed?.(2) ?? '-'}</span><span>最小 {stats[key]?.min?.toFixed?.(2) ?? '-'}</span><span>均值 {stats[key]?.avg?.toFixed?.(2) ?? '-'}</span></div>)}
     </div>
   );
 
@@ -1257,12 +1624,40 @@ function App() {
     );
   };
 
+  const renderLogConsole = () => (
+    <Card className="log-console-card">
+      <SectionTitle
+        icon={Cable}
+        title="调试日志"
+        right={<div className="row"><Button onClick={copyVisibleLogs}>复制日志</Button><Button onClick={() => setLogs([])}><Trash2 size={16} />清空</Button><label className="check inline log-autoscroll"><input type="checkbox" checked={logAutoscroll} onChange={(e) => setLogAutoscroll(e.target.checked)} />自动滚动</label></div>}
+      />
+      <div className="log-filter-row">
+        {LOG_TYPES.map((type) => (
+          <label className={`log-filter ${type.toLowerCase()}`} key={type}>
+            <input type="checkbox" checked={logFilters[type] !== false} onChange={(e) => setLogFilters({ ...logFilters, [type]: e.target.checked })} />
+            {type}
+          </label>
+        ))}
+      </div>
+      <div className="log-console" ref={logConsoleRef}>
+        {visibleLogs.length === 0 && <div className="log-empty">暂无日志。连接、发送、接收或解析异常会显示在这里。</div>}
+        {visibleLogs.map((entry) => (
+          <div className={`log-entry ${entry.type.toLowerCase()}`} key={entry.id}>
+            <time>{new Date(entry.ts).toLocaleTimeString()}</time>
+            <b>{entry.type}</b>
+            <span>{entry.message}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+
   const renderChannelControlPanel = () => (
     <Card className="workspace-card channel-panel">
       <SectionTitle icon={Activity} title="通道管理" right={<Button onClick={applySpeedTemplate}>速度模板</Button>} />
       <div className="channel-list">
-        {plotKeys.length === 0 && <p className="hint">收到 [plot,...] 后会显示通道。</p>}
-        {plotKeys.map((key, i) => {
+        {plotKeys.length === 0 && <p className="hint">尚未收到数据，以下为默认四通道配置。</p>}
+        {chartKeys.map((key, i) => {
           const defaultName = DEFAULT_CONFIG.curveNames[key] || key;
           const currentName = curveNames[key] ?? defaultName;
           return (
@@ -1287,6 +1682,8 @@ function App() {
         <div><span>记录</span><b>{recording ? '记录中' : '未记录'}</b></div>
         <div><span>绘图</span><b>{plotSettings.paused ? '已暂停' : '运行中'}</b></div>
         <div><span>发送</span><b>{formatAge(lastTxAt, now)}</b></div>
+        <div><span>RX 频率</span><b>{rxFrequency.toFixed(1)} Hz</b></div>
+        <div><span>异常包</span><b className={errorPacketCount ? 'danger-text' : ''}>{errorPacketCount}</b></div>
       </div>
     </Card>
   );
@@ -1294,26 +1691,29 @@ function App() {
   const renderPidPanel = () => <div className="stack">{renderPidOverview()}{renderPidWorkbench()}{renderQuickActions()}{renderPidGroupPanel()}</div>;
 
   const renderWorkspace = () => (
-    <div className="workspace-layout">
-      <aside className="workspace-left">
-        {renderCompactConnectionPanel()}
-        {renderPidOverview()}
-        {renderPidWorkbench()}
-        {renderQuickActions()}
-        {renderPidGroupPanel()}
-      </aside>
-      <section className="workspace-center">
-        {renderPlotWorkbenchToolbar()}
-        {renderMainPlotCard()}
-        {renderPlotStatsStrip()}
-        {renderDriveMiniPanel()}
-      </section>
-      <aside className="workspace-right">
-        {renderLogSummaryPanel()}
-        {renderChannelControlPanel()}
-        {renderLiveStatusPanel()}
-      </aside>
-    </div>
+    <>
+      <div className="workspace-layout">
+        <aside className="workspace-left">
+          {renderCompactConnectionPanel()}
+          {renderLiveStatusPanel()}
+          {renderChannelControlPanel()}
+          {renderLogSummaryPanel()}
+        </aside>
+        <section className="workspace-center">
+          {renderPlotWorkbenchToolbar()}
+          {renderMainPlotCard()}
+          {renderPlotStatsStrip()}
+          {renderDriveMiniPanel()}
+        </section>
+        <aside className="workspace-right">
+          {renderPidOverview()}
+          {renderPidWorkbench()}
+          {renderQuickActions()}
+          {renderPidGroupPanel()}
+        </aside>
+      </div>
+      {renderLogConsole()}
+    </>
   );
 
   const renderDrive = (remote = false) => (
