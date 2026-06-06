@@ -12,7 +12,6 @@ import {
   FileUp,
   Gamepad2,
   HelpCircle,
-  Keyboard,
   Maximize2,
   Monitor,
   Paintbrush,
@@ -1271,7 +1270,7 @@ function App() {
         <div><span>最后一包</span><b>{lastRxAt ? `${formatClock(lastRxAt)} / ${formatAge(lastRxAt, now)}` : '暂无'}</b></div>
         <div><span>接收频率</span><b>{rxFrequency.toFixed(1)} Hz</b></div>
         <div><span>异常包</span><b className={errorPacketCount ? 'danger-text' : ''}>{errorPacketCount}</b></div>
-        <div><span>参数状态</span><b className={dirtyPidCount ? 'warn-text' : ''}>{dirtyPidCount ? `${dirtyPidCount} 项未发送` : '已同步'}</b></div>
+        <div><span>日志条数</span><b>{logs.length}</b></div>
         <div><span>曲线更新</span><b className={plotTimeout ? 'warn-text' : ''}>{formatAge(lastPlotAt, now)}</b></div>
         <div><span>连接时长</span><b>{formatDuration(connectedAt ? now - connectedAt : 0)}</b></div>
         <div><span>急停</span><b className={emergencyActive ? 'danger-text' : ''}>{emergencyActive ? '刚刚触发' : '待命'}</b></div>
@@ -1438,135 +1437,13 @@ function App() {
       </div>
       <div className="protocol-hint">
         <b>协议提示</b>
-        <code>[slider,Kp,1.20]</code>
+        <code>[slider,name,value]</code>
         <code>[plot,target,current,error,pwm]</code>
         <span>Loopback 只用于页面模拟，不代表真实硬件在线。</span>
       </div>
       <div className="row mt">
         <Button onClick={exportConfig}><FileDown size={14} />导出配置</Button>
         <label className="file-btn compact-file"><FileUp size={14} />导入<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label>
-      </div>
-    </Card>
-  );
-
-  const renderPidOverview = () => (
-    <Card className="workspace-card pid-overview-card">
-      <SectionTitle icon={SlidersHorizontal} title="参数概览" right={dirtyPidCount ? <span className="dirty-badge">{dirtyPidCount} 未发送</span> : <span className="status-pill tiny ok">已同步</span>} />
-      <div className="pid-overview-grid">
-        {PID_FIELDS.map((field) => {
-          const current = Number(pid[field.key]);
-          const sent = Number(lastSentPid[field.key]);
-          const diff = current - sent;
-          return (
-            <div className={pendingPidKeys.has(field.key) ? 'is-dirty' : ''} key={field.key}>
-              <span>{field.label}</span>
-              <b>{formatNumber(current)}</b>
-              <em>已发 {formatNumber(sent)} / Δ {formatNumber(diff)}</em>
-            </div>
-          );
-        })}
-      </div>
-    </Card>
-  );
-
-  const renderPidFieldRow = (field) => {
-    const dirty = pendingPidKeys.has(field.key);
-    const limits = PID_LIMITS[field.key] || { min: -1000, max: 1000, step: 0.01 };
-    const current = Number(pid[field.key]);
-    const sent = Number(lastSentPid[field.key]);
-    const diff = current - sent;
-    const invalid = pidErrors[field.key];
-    const sendState = pidSendState[field.key];
-    const sendDisabled = !connected || !!invalid || sendState === 'sending';
-    return (
-      <div className={`pid-field-row ${dirty ? 'is-dirty' : ''}`} key={field.key}>
-        <div className="pid-field-title">
-          <b>{field.label}</b>
-          <span>{field.sendName}</span>
-        </div>
-        <input
-          className="pid-number-input"
-          inputMode="decimal"
-          value={pidDrafts[field.key] ?? String(pid[field.key] ?? '')}
-          onChange={(e) => updatePidValue(field.key, e.target.value)}
-          onBlur={() => normalizePidDraft(field.key)}
-        />
-        <input
-          className="pid-range"
-          type="range"
-          min={limits.min}
-          max={limits.max}
-          step={limits.step}
-          value={Number.isFinite(current) ? clamp(current, limits.min, limits.max) : limits.min}
-          onChange={(e) => updatePidValue(field.key, e.target.value)}
-        />
-        <div className="pid-step-buttons">
-          <Button onClick={() => changePidValue(field.key, -Number(pid.stepLarge || 10))}>-{pid.stepLarge}</Button>
-          <Button onClick={() => changePidValue(field.key, -Number(pid.stepSmall || 1))}>-{pid.stepSmall}</Button>
-          <Button onClick={() => changePidValue(field.key, Number(pid.stepSmall || 1))}>+{pid.stepSmall}</Button>
-          <Button onClick={() => changePidValue(field.key, Number(pid.stepLarge || 10))}>+{pid.stepLarge}</Button>
-        </div>
-        <div className="pid-value-meta">
-          <span>编辑 <b>{formatNumber(current)}</b></span>
-          <span>已发 <b>{formatNumber(sent)}</b></span>
-          <span className={dirty ? 'warn-text' : ''}>差值 <b>{formatNumber(diff)}</b></span>
-        </div>
-        <div className="pid-row-actions">
-          <Button disabled={sendDisabled} variant={dirty ? 'primary' : 'secondary'} onClick={() => sendPidField(field)}><Send size={14} />{sendState === 'sending' ? '发送中' : '单发'}</Button>
-          <Button disabled={!dirty} onClick={() => revertPidField(field)}><RotateCcw size={14} />撤销</Button>
-        </div>
-        <div className={`pid-sync-state ${invalid ? 'bad' : sendState === 'error' ? 'bad' : dirty ? 'dirty' : 'ok'}`}>
-          {invalid || (sendState === 'error' ? '发送失败' : dirty ? '未发送' : sendState === 'sending' ? '发送中' : '已同步')}
-        </div>
-      </div>
-    );
-  };
-
-  const renderPidWorkbench = () => (
-    <Card className="workspace-card pid-workbench-card">
-      <SectionTitle
-        icon={SlidersHorizontal}
-        title="PID 参数工作台"
-        right={<div className="row pid-header-actions"><Button disabled={!connected || dirtyPidCount === 0} variant="primary" onClick={sendDirtyPid}><Send size={16} />发送改动</Button><Button disabled={!connected} onClick={sendAllPid}>发送全部</Button><Button disabled={dirtyPidCount === 0} onClick={revertAllPid}><RotateCcw size={16} />恢复</Button></div>}
-      />
-      <MiniInput label="参数组名称" value={pid.groupName} onChange={(v) => setPid({ ...pid, groupName: v })} />
-      <div className="grid2 pid-step-config"><MiniInput label="小步进" type="number" value={pid.stepSmall} onChange={(v) => setPid({ ...pid, stepSmall: v })} /><MiniInput label="大步进" type="number" value={pid.stepLarge} onChange={(v) => setPid({ ...pid, stepLarge: v })} /></div>
-      <div className="pid-section-list">
-        {PID_GROUPS.map((group) => {
-          const fields = PID_FIELDS.filter((field) => group.keys.includes(field.key));
-          const hasDirty = fields.some((field) => pendingPidKeys.has(field.key));
-          return (
-            <section className={`pid-section ${hasDirty ? 'is-dirty' : ''}`} key={group.id}>
-              <div className="pid-section-head"><h3>{group.title}</h3>{hasDirty && <span>有未发送改动</span>}<Button disabled={!connected} onClick={() => sendPidGroup(group.id)}>发送本组</Button></div>
-              <div className="pid-section-body">{fields.map(renderPidFieldRow)}</div>
-            </section>
-          );
-        })}
-      </div>
-    </Card>
-  );
-
-  const renderQuickActions = () => (
-    <Card className="workspace-card quick-actions-card">
-      <SectionTitle icon={Keyboard} title="快捷动作" />
-      <div className="quick-actions-grid">
-        <Button disabled={!connected || dirtyPidCount === 0} variant="primary" onClick={sendDirtyPid}><Send size={16} />发送改动</Button>
-        <Button disabled={dirtyPidCount === 0} onClick={revertAllPid}><RotateCcw size={16} />恢复参数</Button>
-        <Button onClick={savePidGroup}><Save size={16} />保存参数组</Button>
-        <Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>
-        <Button onClick={clearPlot}><Trash2 size={16} />清空曲线</Button>
-        <Button onClick={() => setPlotSettings((p) => ({ ...p, paused: !p.paused }))}>{plotSettings.paused ? <Play size={16} /> : <Pause size={16} />}{plotSettings.paused ? '继续曲线' : '暂停曲线'}</Button>
-        <Button variant="danger" onClick={emergencyStop}><AlertTriangle size={16} />急停</Button>
-      </div>
-    </Card>
-  );
-
-  const renderPidGroupPanel = () => (
-    <Card className="workspace-card pid-group-card">
-      <SectionTitle icon={Save} title="已保存参数组" right={<Button onClick={savePidGroup}>保存当前</Button>} />
-      <div className="group-list compact-groups">
-        {pidGroups.length === 0 && <p className="hint">暂无已保存参数组。</p>}
-        {pidGroups.map((g) => <div className="group-row compact" key={g.id || g.groupName}><span><b>{g.groupName}</b><em>Kp={g.kp} Ki={g.ki} Kd={g.kd} Target={g.targetSpeed}</em></span><Button onClick={() => { const nextPid = { ...DEFAULT_PID, ...g }; setPid(nextPid); setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key] ?? 0)]))); setPidErrors({}); setPendingPidKeys(new Set(PID_FIELDS.map((field) => field.key))); appendTx(`已加载参数组：${g.groupName || '未命名参数组'}`, 'SYSTEM'); }}>载入</Button><Button onClick={() => { setPidGroups(pidGroups.filter((x) => x !== g)); appendTx(`已删除参数组：${g.groupName || '未命名参数组'}`, 'SYSTEM'); }}><Trash2 size={14} /></Button></div>)}
       </div>
     </Card>
   );
@@ -1688,8 +1565,6 @@ function App() {
     </Card>
   );
 
-  const renderPidPanel = () => <div className="stack">{renderPidOverview()}{renderPidWorkbench()}{renderQuickActions()}{renderPidGroupPanel()}</div>;
-
   const renderWorkspace = () => (
     <>
       <div className="workspace-layout">
@@ -1705,12 +1580,6 @@ function App() {
           {renderPlotStatsStrip()}
           {renderDriveMiniPanel()}
         </section>
-        <aside className="workspace-right">
-          {renderPidOverview()}
-          {renderPidWorkbench()}
-          {renderQuickActions()}
-          {renderPidGroupPanel()}
-        </aside>
       </div>
       {renderLogConsole()}
     </>
@@ -1719,7 +1588,6 @@ function App() {
   const renderDrive = (remote = false) => (
     <div className={remote ? 'remote-layout' : 'drive-split'}>
       <div className="stack drive-control-column">
-        {!remote && renderPidPanel()}
         <Card className="joystick-card"><SectionTitle icon={Gamepad2} title="摇杆控制" right={<Button onClick={() => sendPacket(['joystick', 0, 0, 0, 0])}><RotateCcw size={16} />回中</Button>} />
           <div className="joy-grid"><Joystick label="左摇杆 / WASD" value={keyboardVector.active ? { x: keyboardVector.x, y: keyboardVector.y } : leftJoy} config={joystickConfig} onChange={setLeftJoy} onActiveChange={setJoyActive} large={remote} /><Joystick label="右摇杆" value={rightJoy} config={joystickConfig} onChange={setRightJoy} onActiveChange={setJoyActive} large={remote} /></div>
           {!remote && <div className="grid3 mt"><MiniInput label="横向最大值" type="number" value={joystickConfig.maxX} onChange={(v) => setJoystickConfig({ ...joystickConfig, maxX: v })} /><MiniInput label="纵向最大值" type="number" value={joystickConfig.maxY} onChange={(v) => setJoystickConfig({ ...joystickConfig, maxY: v })} /><MiniInput label="死区" type="number" value={joystickConfig.deadzone} onChange={(v) => setJoystickConfig({ ...joystickConfig, deadzone: v })} /><MiniInput label="横向步距" type="number" value={joystickConfig.stepX} onChange={(v) => setJoystickConfig({ ...joystickConfig, stepX: v })} /><MiniInput label="纵向步距" type="number" value={joystickConfig.stepY} onChange={(v) => setJoystickConfig({ ...joystickConfig, stepY: v })} /><label>形状<select value={joystickConfig.shape} onChange={(e) => setJoystickConfig({ ...joystickConfig, shape: e.target.value })}><option value="square">方形</option><option value="circle">圆形</option></select></label><label className="check"><input type="checkbox" checked={joystickConfig.invertX} onChange={(e) => setJoystickConfig({ ...joystickConfig, invertX: e.target.checked })} />横向反向</label><label className="check"><input type="checkbox" checked={joystickConfig.invertY} onChange={(e) => setJoystickConfig({ ...joystickConfig, invertY: e.target.checked })} />纵向反向</label></div>}
@@ -1842,7 +1710,7 @@ function App() {
 
   const renderSliders = () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
 
-  const renderRecords = () => <div className="stack"><Card><SectionTitle icon={Save} title="数据记录" right={<div className="row"><Button variant={recording ? 'danger' : 'primary'} onClick={recording ? stopRecord : startRecord}>{recording ? <StopCircle size={16} /> : <Play size={16} />}{recording ? '停止并保存' : '开始记录'}</Button></div>} /><MiniInput label="记录名称" value={recordName} onChange={setRecordName} /><p>记录时不会改变协议，只保存网页收到的 [plot,...] 数据。可用于不同 PID 参数的曲线对比。</p></Card><Card><SectionTitle icon={RefreshCw} title="历史记录回放" /><div className="group-list">{records.map((rec) => <div className="group-row" key={rec.id}><span><b>{rec.name}</b><em>{new Date(rec.createdAt).toLocaleString()} · {rec.rows?.length || 0} 点</em></span><Button onClick={() => replayRecord(rec)}>回放</Button><Button onClick={() => exportPlotCsv(rec.rows || [], Object.keys(rec.rows?.[0] || {}).filter((k) => k.startsWith('CH')), rec.curveNames || {})}><Download size={14} /></Button><Button onClick={() => setRecords(records.filter((r) => r.id !== rec.id))}><Trash2 size={14} /></Button></div>)}</div></Card></div>;
+  const renderRecords = () => <div className="stack"><Card><SectionTitle icon={Save} title="数据记录" right={<div className="row"><Button variant={recording ? 'danger' : 'primary'} onClick={recording ? stopRecord : startRecord}>{recording ? <StopCircle size={16} /> : <Play size={16} />}{recording ? '停止并保存' : '开始记录'}</Button></div>} /><MiniInput label="记录名称" value={recordName} onChange={setRecordName} /><p>记录时不会改变协议，只保存网页收到的 [plot,...] 数据。可用于不同运行状态的曲线对比。</p></Card><Card><SectionTitle icon={RefreshCw} title="历史记录回放" /><div className="group-list">{records.map((rec) => <div className="group-row" key={rec.id}><span><b>{rec.name}</b><em>{new Date(rec.createdAt).toLocaleString()} · {rec.rows?.length || 0} 点</em></span><Button onClick={() => replayRecord(rec)}>回放</Button><Button onClick={() => exportPlotCsv(rec.rows || [], Object.keys(rec.rows?.[0] || {}).filter((k) => k.startsWith('CH')), rec.curveNames || {})}><Download size={14} /></Button><Button onClick={() => setRecords(records.filter((r) => r.id !== rec.id))}><Trash2 size={14} /></Button></div>)}</div></Card></div>;
 
   const renderThemeHelp = () => <div className="stack"><Card><SectionTitle icon={HelpCircle} title="使用说明" /><div className="help-grid"><div><h3>连接</h3><p>Web Serial 可直接连接 USB-TTL、CH340、CP2102、STM32 虚拟串口；Orange Pi 本地桥适合开机自启动；BLE 模式仍保留 UUID 预设。环回测试不需要硬件。</p></div><div><h3>协议</h3><pre>[key,name,down/up]\n[slider,name,value]\n[joystick,lx,ly,rx,ry]\n[plot,v1,v2,...]\n[display,x,y,text,size]</pre></div><div><h3>快捷键</h3><p>空格急停；W/A/S/D 控制左摇杆；P 暂停绘图；R 清空绘图；F 浏览器全屏；C 连接/断开。</p></div><div><h3>安全</h3><p>页面隐藏、断开连接、关闭页面时会尽量发送 [joystick,0,0,0,0]，急停按钮固定在页面右上角。串口接收已加入分包/粘包缓存。</p></div></div></Card><Card><SectionTitle icon={Paintbrush} title="外观设置" right={<div className="row">{Object.entries(THEME_PRESETS).map(([k, v]) => <Button key={k} onClick={() => setTheme({ ...theme, ...v.values })}>{v.label}</Button>)}</div>} /><div className="theme-grid">{['primary','accent','danger','bg','card','input','text','muted','border'].map((key) => <label key={key}>{key}<input type="color" value={theme[key]} onChange={(e) => setTheme({ ...theme, [key]: e.target.value })} /></label>)}</div><div className="grid3"><MiniInput label="圆角" type="number" value={theme.radius} onChange={(v) => setTheme({ ...theme, radius: v })} /><MiniInput label="字体缩放" type="number" step="0.05" value={theme.fontScale} onChange={(v) => setTheme({ ...theme, fontScale: v })} /><label>密度<select value={theme.density} onChange={(e) => setTheme({ ...theme, density: e.target.value })}><option value="compact">紧凑</option><option value="comfortable">舒适</option><option value="large">宽松</option></select></label><label>阴影<select value={theme.shadow} onChange={(e) => setTheme({ ...theme, shadow: e.target.value })}><option value="flat">扁平</option><option value="soft">柔和阴影</option><option value="glow">科技发光</option></select></label></div></Card></div>;
 
@@ -1866,7 +1734,7 @@ function App() {
     return <div className="tools-layout"><Card className="tools-subnav">{tools.map(([k, Icon, label]) => <Button key={k} className={toolTab === k ? 'is-active' : ''} variant={toolTab === k ? 'primary' : 'secondary'} onClick={() => setToolTab(k)}><Icon size={16} />{label}</Button>)}</Card><div className="tools-content">{toolContent}</div></div>;
   };
 
-  const renderConfig = () => <Card><SectionTitle icon={FileDown} title="配置导入 / 导出" /><div className="row"><Button variant="primary" onClick={exportConfig}><FileDown size={16} />导出配置 JSON</Button><label className="file-btn"><FileUp size={16} />导入配置 JSON<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label><Button variant="danger" onClick={resetConfig}><RotateCcw size={16} />恢复默认配置</Button></div><p>配置包含蓝牙 UUID、主题、摇杆参数、曲线名称、显示隐藏、PID 参数组、按键和滑杆。换电脑或队友共用时可直接导入。</p></Card>;
+  const renderConfig = () => <Card><SectionTitle icon={FileDown} title="配置导入 / 导出" /><div className="row"><Button variant="primary" onClick={exportConfig}><FileDown size={16} />导出配置 JSON</Button><label className="file-btn"><FileUp size={16} />导入配置 JSON<input type="file" accept="application/json,.json" onChange={(e) => importConfig(e.target.files?.[0])} /></label><Button variant="danger" onClick={resetConfig}><RotateCcw size={16} />恢复默认配置</Button></div><p>配置包含蓝牙 UUID、主题、摇杆参数、曲线名称、显示隐藏、按键和滑杆。换电脑或队友共用时可直接导入。</p></Card>;
 
   let content = null;
   if (tab === 'workspace') content = renderWorkspace();
@@ -1878,7 +1746,7 @@ function App() {
   return <div className={appClass} style={themeStyle}>
     <Button className="sticky-emergency" variant="danger" onClick={emergencyStop}><AlertTriangle size={18} />急停 SPACE</Button>
     <div className="container">
-      <header className="hero hero-workbench"><div><h1>桌面联调工作台</h1><p>连接设备 · 调 PID · 看曲线 · 查日志 · Orange Pi 本地化部署</p></div>{renderStatus()}</header>
+      <header className="hero hero-workbench"><div><h1>桌面联调工作台</h1><p>连接设备 · 看曲线 · 查日志 · 导出数据 · Orange Pi 本地化部署</p></div>{renderStatus()}</header>
       <div className="top-nav-row">{renderTabs()}{renderSettings()}</div>
       <main className="content full-content">{content}</main>
     </div>

@@ -899,7 +899,7 @@ textarea {
 }
 
 .workspace-layout {
-  grid-template-columns: 330px minmax(560px, 1fr) 430px;
+  grid-template-columns: 340px minmax(680px, 1fr);
   gap: 14px;
 }
 
@@ -910,8 +910,8 @@ textarea {
 }
 
 .plot-main-card .plot-box {
-  height: clamp(420px, 50vh, 640px);
-  min-height: 420px;
+  height: clamp(460px, 56vh, 700px);
+  min-height: 440px;
   background: #081018;
   border-color: #213142;
 }
@@ -1102,7 +1102,7 @@ textarea {
 .log-filter.warn { color: #f59e0b; }
 
 .log-console {
-  height: clamp(170px, 22vh, 260px);
+  height: clamp(210px, 26vh, 320px);
   overflow: auto;
   border: 1px solid #223142;
   border-radius: 7px;
@@ -1153,7 +1153,7 @@ textarea {
 
 @media (max-width: 1600px) {
   .workspace-layout {
-    grid-template-columns: 310px minmax(480px, 1fr) 390px;
+    grid-template-columns: 320px minmax(560px, 1fr);
   }
 
   .statusbar-workbench.connection {
