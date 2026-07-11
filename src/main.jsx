@@ -144,7 +144,6 @@ const DEFAULT_SERIAL = {
   stopBits: 1,
   parity: 'none',
   flowControl: 'none',
-  useRememberedPort: true,
   packetBufferSize: 8192,
 };
 
@@ -224,6 +223,27 @@ const PID_GROUPS = [
   { id: 'pid', title: 'PID 增益', keys: ['kp', 'ki', 'kd'] },
   { id: 'bias', title: '左右轮补偿', keys: ['leftBias', 'rightBias'] },
 ];
+
+function getSerialPortInfo(port) {
+  try {
+    return port?.getInfo?.() || {};
+  } catch {
+    return {};
+  }
+}
+
+function formatUsbId(value) {
+  return Number(value).toString(16).toUpperCase().padStart(4, '0');
+}
+
+function getSerialPortLabel(port, index) {
+  const info = getSerialPortInfo(port);
+  const parts = [];
+  if (info.usbVendorId != null) parts.push(`VID ${formatUsbId(info.usbVendorId)}`);
+  if (info.usbProductId != null) parts.push(`PID ${formatUsbId(info.usbProductId)}`);
+  if (info.bluetoothServiceClassId) parts.push(`BT ${info.bluetoothServiceClassId}`);
+  return `端口 ${index + 1}${parts.length ? ` (${parts.join(' / ')})` : ''}`;
+}
 
 function formatClock(ts) {
   if (!ts) return '暂无';
@@ -451,6 +471,9 @@ function App() {
   const [pid, setPid] = useState({ ...DEFAULT_PID, ...(saved.pid || {}) });
   const [pidGroups, setPidGroups] = useState(saved.pidGroups || []);
   const [serialSettings, setSerialSettings] = useState({ ...DEFAULT_SERIAL, ...(saved.serial || {}) });
+  const [serialPorts, setSerialPorts] = useState([]);
+  const [selectedSerialPortIndex, setSelectedSerialPortIndex] = useState('');
+  const [serialPortMessage, setSerialPortMessage] = useState('');
   const [bridgeSettings, setBridgeSettings] = useState({ ...DEFAULT_BRIDGE, ...(saved.bridge || {}) });
   const [records, setRecords] = useState(() => loadJson(RECORD_KEY, { records: [] }).records || []);
 
@@ -580,6 +603,76 @@ function App() {
     });
     appendLog(type, text);
   };
+
+  const refreshSerialPorts = async (preferredPort = null) => {
+    if (typeof navigator === 'undefined' || !navigator.serial?.getPorts) {
+      setSerialPorts([]);
+      setSelectedSerialPortIndex('');
+      setSerialPortMessage('当前浏览器不支持 Web Serial，请使用桌面版 Chrome / Edge');
+      return [];
+    }
+
+    try {
+      const ports = await navigator.serial.getPorts();
+      setSerialPorts(ports);
+      setSerialPortMessage(ports.length ? `已检测到 ${ports.length} 个已授权串口` : '暂无已授权串口，请先点击“授权端口”');
+      setSelectedSerialPortIndex((current) => {
+        if (preferredPort) {
+          const preferredIndex = ports.indexOf(preferredPort);
+          if (preferredIndex >= 0) return String(preferredIndex);
+        }
+        const currentIndex = Number(current);
+        if (Number.isInteger(currentIndex) && currentIndex >= 0 && currentIndex < ports.length) return String(currentIndex);
+        return ports.length ? '0' : '';
+      });
+      return ports;
+    } catch (err) {
+      setSerialPorts([]);
+      setSelectedSerialPortIndex('');
+      setSerialPortMessage(`读取串口列表失败：${err.message}`);
+      return [];
+    }
+  };
+
+  const requestSerialPortPermission = async () => {
+    if (typeof navigator === 'undefined' || !navigator.serial?.requestPort) {
+      setSerialPortMessage('当前浏览器不支持 Web Serial，请使用桌面版 Chrome / Edge');
+      appendTx('当前浏览器不支持 Web Serial，请使用桌面版 Chrome / Edge', 'WARN');
+      return;
+    }
+
+    try {
+      const port = await navigator.serial.requestPort();
+      const ports = await refreshSerialPorts(port);
+      const index = ports.indexOf(port);
+      const label = getSerialPortLabel(port, index >= 0 ? index : ports.length);
+      setSerialPortMessage(`已授权：${label}`);
+      appendTx(`已授权串口：${label}`, 'SYSTEM');
+    } catch (err) {
+      if (err.name === 'NotFoundError') {
+        setSerialPortMessage('未选择串口');
+        appendTx('未选择串口', 'WARN');
+        return;
+      }
+      setSerialPortMessage(`授权串口失败：${err.message}`);
+      appendTx(`授权串口失败：${err.message}`, 'ERROR');
+    }
+  };
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.serial?.getPorts) return;
+    refreshSerialPorts();
+
+    const handlePortsChanged = () => {
+      refreshSerialPorts();
+    };
+    navigator.serial.addEventListener?.('connect', handlePortsChanged);
+    navigator.serial.addEventListener?.('disconnect', handlePortsChanged);
+    return () => {
+      navigator.serial.removeEventListener?.('connect', handlePortsChanged);
+      navigator.serial.removeEventListener?.('disconnect', handlePortsChanged);
+    };
+  }, []);
 
   const bumpInvalidPacket = (reason, packet = '') => {
     setErrorPacketCount((count) => count + 1);
@@ -733,12 +826,21 @@ function App() {
       setConnectionState('connecting');
       intentionallyDisconnected.current = false;
       rxPacketBuffer.current = '';
-      let port = null;
-      if (serialSettings.useRememberedPort && navigator.serial.getPorts) {
-        const ports = await navigator.serial.getPorts();
-        port = ports?.[0] || null;
+      let ports = serialPorts;
+      const selectedIndex = Number(selectedSerialPortIndex);
+      let port = Number.isInteger(selectedIndex) ? ports[selectedIndex] : null;
+      if (!port && navigator.serial.getPorts) {
+        ports = await navigator.serial.getPorts();
+        setSerialPorts(ports);
+        port = Number.isInteger(selectedIndex) ? ports[selectedIndex] : null;
       }
-      if (!port) port = await navigator.serial.requestPort();
+      if (!port) {
+        setConnectionState('error');
+        setDisconnectReason('请先在 USB-TTL 设置中授权并选择连接端口');
+        setStatus('请先授权并选择 USB-TTL 连接端口');
+        appendTx('请先在 USB-TTL 设置中授权并选择连接端口', 'WARN');
+        return;
+      }
       const options = {
         baudRate: Number(serialSettings.baudRate) || 115200,
         dataBits: Number(serialSettings.dataBits) || 8,
@@ -748,13 +850,15 @@ function App() {
       };
       await port.open(options);
       const writer = port.writable.getWriter();
+      const portIndex = ports.indexOf(port);
+      const portLabel = getSerialPortLabel(port, portIndex >= 0 ? portIndex : selectedIndex || 0);
       serialRef.current = { port, writer, reader: null, keepReading: true };
-      setDeviceName('Web Serial 设备');
       setConnectedAt(Date.now());
+      setDeviceName(portLabel);
       setConnectionState('connected');
       setDisconnectReason('');
-      setStatus(`串口已连接：${options.baudRate}bps / ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`);
-      appendTx(`Web Serial 已连接：${options.baudRate}bps`, 'SYSTEM');
+      setStatus(`串口已连接：${portLabel} / ${options.baudRate}bps / ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`);
+      appendTx(`Web Serial 已连接端口：${portLabel}`, 'SYSTEM');
       readSerialLoop(port);
     } catch (err) {
       setConnectionState('error');
@@ -1285,6 +1389,31 @@ function App() {
     </Card>
   );
 
+  const renderSerialPortPicker = (compact = false) => (
+    <div className={`serial-port-picker ${compact ? 'compact' : ''}`}>
+      <div className="serial-port-picker-row">
+        <label>
+          连接端口
+          <select
+            value={selectedSerialPortIndex}
+            disabled={connected || connectionState === 'connecting' || serialPorts.length === 0}
+            onChange={(e) => setSelectedSerialPortIndex(e.target.value)}
+          >
+            {serialPorts.length === 0 && <option value="">暂无已授权端口</option>}
+            {serialPorts.map((port, index) => (
+              <option key={index} value={String(index)}>{getSerialPortLabel(port, index)}</option>
+            ))}
+          </select>
+        </label>
+        <div className="serial-port-actions">
+          <Button disabled={connectionState === 'connecting'} onClick={() => refreshSerialPorts()}><RefreshCw size={14} />刷新端口</Button>
+          <Button disabled={connected || connectionState === 'connecting'} onClick={requestSerialPortPermission}><Usb size={14} />授权端口</Button>
+        </div>
+      </div>
+      <p className="hint">{serialPortMessage || '浏览器只能列出已授权串口；看不到目标端口时，请点击“授权端口”。'}</p>
+    </div>
+  );
+
   const renderSettings = () => (
     <Card className={`settings-panel ${settingsExpanded ? 'is-open' : ''}`}>
       <SectionTitle icon={Settings} title="连接与通用设置" right={<Button onClick={() => setSettingsExpanded((v) => !v)}>{settingsExpanded ? '收起' : '展开'}</Button>} />
@@ -1303,6 +1432,7 @@ function App() {
         <label className="check"><input type="checkbox" checked={autoReconnect} onChange={(e) => setAutoReconnect(e.target.checked)} />断线后自动尝试重连</label>
       </>}
       {transport === 'serial' && <div className="serial-options">
+        {renderSerialPortPicker()}
         <div className="grid3">
           <MiniInput label="波特率" type="number" value={serialSettings.baudRate} onChange={(v) => setSerialSettings({ ...serialSettings, baudRate: v })} />
           <label>数据位<select value={serialSettings.dataBits} onChange={(e) => setSerialSettings({ ...serialSettings, dataBits: Number(e.target.value) })}><option value={8}>8</option><option value={7}>7</option></select></label>
@@ -1313,7 +1443,6 @@ function App() {
           <label>流控<select value={serialSettings.flowControl} onChange={(e) => setSerialSettings({ ...serialSettings, flowControl: e.target.value })}><option value="none">none</option><option value="hardware">hardware</option></select></label>
           <MiniInput label="协议残包缓存" type="number" value={serialSettings.packetBufferSize} onChange={(v) => setSerialSettings({ ...serialSettings, packetBufferSize: v })} />
         </div>
-        <label className="check"><input type="checkbox" checked={serialSettings.useRememberedPort} onChange={(e) => setSerialSettings({ ...serialSettings, useRememberedPort: e.target.checked })} />优先连接已授权串口，适合 Orange Pi Kiosk 模式</label>
         <p className="hint">建议 Orange Pi 手持版优先用 USB-TTL：CH340 / CP2102 / STM32 虚拟串口均可。</p>
       </div>}
       {transport === 'bridge' && <div className="serial-options">
@@ -1423,10 +1552,13 @@ function App() {
         <span>Loopback</span><b>{loopback ? '模拟测试' : '真实链路'}</b>
       </div>
       <label>连接方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="serial">Web Serial / USB-TTL</option><option value="bridge">Orange Pi Bridge</option><option value="ble">BLE 蓝牙</option></select></label>
-      {transport === 'serial' && <div className="inline-settings-grid">
-        <MiniInput label="波特率" type="number" value={serialSettings.baudRate} onChange={(v) => setSerialSettings({ ...serialSettings, baudRate: v })} />
-        <label>校验<select value={serialSettings.parity} onChange={(e) => setSerialSettings({ ...serialSettings, parity: e.target.value })}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
-      </div>}
+      {transport === 'serial' && <>
+        {renderSerialPortPicker(true)}
+        <div className="inline-settings-grid">
+          <MiniInput label="波特率" type="number" value={serialSettings.baudRate} onChange={(v) => setSerialSettings({ ...serialSettings, baudRate: v })} />
+          <label>校验<select value={serialSettings.parity} onChange={(e) => setSerialSettings({ ...serialSettings, parity: e.target.value })}><option value="none">none</option><option value="even">even</option><option value="odd">odd</option></select></label>
+        </div>
+      </>}
       {transport === 'bridge' && <label>Orange Pi Bridge<input className="mono" value={bridgeSettings.url} onChange={(e) => setBridgeSettings({ ...bridgeSettings, url: e.target.value })} /></label>}
       {transport === 'ble' && <label>BLE 预设<select value={preset} onChange={(e) => setPreset(e.target.value)}>{Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>}
       <label className="check with-title"><span>Loopback 测试模式</span><input type="checkbox" checked={loopback} onChange={(e) => setLoopback(e.target.checked)} /></label>

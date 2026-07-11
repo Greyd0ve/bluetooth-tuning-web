@@ -143,7 +143,7 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
 }
 @media (max-width: 760px) {
   .page { padding: 12px; }
-  .nav-card, .grid2, .grid3, .grid5, .button-grid { grid-template-columns: 1fr; }
+  .nav-card, .grid2, .grid3, .grid5, .button-grid, .serial-port-picker-row { grid-template-columns: 1fr; }
   .pid-row { grid-template-columns: 1fr 1fr; }
   .plot-channel-panel { grid-template-columns: 1fr; }
   .plot-channel-actions { grid-template-columns: 1fr; }
@@ -156,6 +156,40 @@ input[type="checkbox"] { width: auto; accent-color: var(--app-primary, #2563eb);
   border: 1px dashed var(--app-border, #cbd5e1);
   border-radius: calc(var(--app-radius, 20px) * 0.7);
   background: color-mix(in srgb, var(--app-card, #fff) 78%, var(--app-bg, #eef2f7));
+}
+
+.serial-port-picker {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--app-border, #cbd5e1);
+  border-radius: calc(var(--app-radius, 20px) * 0.6);
+  background: color-mix(in srgb, var(--app-card, #fff) 86%, var(--app-bg, #eef2f7));
+}
+
+.serial-port-picker.compact {
+  margin: 8px 0;
+}
+
+.serial-port-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.serial-port-picker-row label {
+  margin: 0;
+}
+
+.serial-port-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.serial-port-picker .hint {
+  margin-top: 8px;
 }
 
 @media (pointer: coarse) {
