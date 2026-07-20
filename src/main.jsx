@@ -1922,6 +1922,9 @@ function App() {
   );
 
   const AIM_FREQ_OPTIONS = [1, 10, 20, 50, 60];
+  const [aimScenario, setAimScenario] = useState('CUSTOM');
+  const aimScenarioRef = useRef('CUSTOM');
+  useEffect(() => { aimScenarioRef.current = aimScenario; }, [aimScenario]);
   const aimMovingRef = useRef(0);
 
   const aimGetEffectiveFreq = () => (aimFreq === 'custom' ? Math.min(100, Math.max(1, Number(aimCustomFreq) || 10)) : Number(aimFreq));
@@ -1956,6 +1959,7 @@ function App() {
     setAimFlags(p.flags);
     setAimState(p.state);
     if (name === 'MOVING') aimMovingRef.current = 0;
+    setAimScenario(name);
   };
 
   const autoFillCoords = () => {
@@ -2015,12 +2019,11 @@ function App() {
       if (aimSendingRef.current) return;
       aimSendingRef.current = true;
 
-      let fields = aimCurrentFields();
-      const presetMoving = aimRectX === 120 || aimRectY === 240;
-      if (fields.tracking_state === AimTrackingState.TRACKING && (aimFlags & AimValidFlags.RECT_VALID)) {
+      let fields = { ...aimFieldsRef.current };
+      if (aimScenarioRef.current === 'MOVING') {
         aimMovingRef.current = (aimMovingRef.current + 1) % 100;
         const phase = aimMovingRef.current / 100;
-        fields.rect_x = Math.round(120 + Math.sin(phase * Math.PI * 2) * 200);
+        fields.rect_x = Math.round(320 + Math.sin(phase * Math.PI * 2) * 200);
         fields.rect_x = Math.max(120, Math.min(520, fields.rect_x));
         setAimRectX(fields.rect_x);
       }
@@ -2038,15 +2041,6 @@ function App() {
   };
 
   const resetAimSeq = () => { aimSeqRef.current = 0; setAimSequence(0); aimMovingRef.current = 0; };
-
-  useInterval(() => {
-    if (!aimRunning) return;
-    if ((aimFlags & AimValidFlags.RECT_VALID) && aimState === AimTrackingState.TRACKING) {
-      const phase = (aimMovingRef.current + 1) / 100;
-      const x = Math.round(120 + 200 + Math.sin(phase * Math.PI * 2) * 200);
-      setAimRectX(Math.max(120, Math.min(520, x)));
-    }
-  }, null);
 
   useEffect(() => {
     return () => { if (aimTimerRef.current) clearInterval(aimTimerRef.current); };
@@ -2132,24 +2126,24 @@ function App() {
               <div className="row"><span className="hint">{AIM_FRAME_SIZE} 字节二进制帧</span></div>
             } />
             <div className="aim-field-grid">
-              <label>rect_x <input type="number" value={aimRectX} onChange={(e) => setAimRectX(Number(e.target.value))} min={0} max={65535} /></label>
-              <label>rect_y <input type="number" value={aimRectY} onChange={(e) => setAimRectY(Number(e.target.value))} min={0} max={65535} /></label>
-              <label>laser_x <input type="number" value={aimLaserX} onChange={(e) => setAimLaserX(Number(e.target.value))} min={0} max={65535} /></label>
-              <label>laser_y <input type="number" value={aimLaserY} onChange={(e) => setAimLaserY(Number(e.target.value))} min={0} max={65535} /></label>
+              <label>rect_x <input type="number" value={aimRectX} onChange={(e) => { setAimRectX(Number(e.target.value)); setAimScenario('CUSTOM'); }} min={0} max={65535} /></label>
+              <label>rect_y <input type="number" value={aimRectY} onChange={(e) => { setAimRectY(Number(e.target.value)); setAimScenario('CUSTOM'); }} min={0} max={65535} /></label>
+              <label>laser_x <input type="number" value={aimLaserX} onChange={(e) => { setAimLaserX(Number(e.target.value)); setAimScenario('CUSTOM'); }} min={0} max={65535} /></label>
+              <label>laser_y <input type="number" value={aimLaserY} onChange={(e) => { setAimLaserY(Number(e.target.value)); setAimScenario('CUSTOM'); }} min={0} max={65535} /></label>
             </div>
           </Card>
 
           <Card>
             <SectionTitle icon={Settings} title="Flags & State" />
             <div className="aim-flags-grid">
-              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.RECT_VALID) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.RECT_VALID)} />RECT_VALID (bit0)</label>
-              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.LASER_VALID) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.LASER_VALID)} />LASER_VALID (bit1)</label>
-              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.TARGET_LOCKED) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.TARGET_LOCKED)} />TARGET_LOCKED (bit2)</label>
-              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.MEASUREMENT_FRESH) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.MEASUREMENT_FRESH)} />MEASUREMENT_FRESH (bit3)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.RECT_VALID) !== 0} onChange={() => { setAimFlags(aimFlags ^ AimValidFlags.RECT_VALID); setAimScenario('CUSTOM'); }} />RECT_VALID (bit0)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.LASER_VALID) !== 0} onChange={() => { setAimFlags(aimFlags ^ AimValidFlags.LASER_VALID); setAimScenario('CUSTOM'); }} />LASER_VALID (bit1)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.TARGET_LOCKED) !== 0} onChange={() => { setAimFlags(aimFlags ^ AimValidFlags.TARGET_LOCKED); setAimScenario('CUSTOM'); }} />TARGET_LOCKED (bit2)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.MEASUREMENT_FRESH) !== 0} onChange={() => { setAimFlags(aimFlags ^ AimValidFlags.MEASUREMENT_FRESH); setAimScenario('CUSTOM'); }} />MEASUREMENT_FRESH (bit3)</label>
             </div>
             <div className="aim-state-row">
               <label>tracking_state
-                <select value={aimState} onChange={(e) => setAimState(Number(e.target.value))}>
+                <select value={aimState} onChange={(e) => { setAimState(Number(e.target.value)); setAimScenario('CUSTOM'); }}>
                   {Object.entries(AimTrackingStateNames).map(([k, v]) => <option key={k} value={k}>{`${k} ${v}`}</option>)}
                 </select>
               </label>
