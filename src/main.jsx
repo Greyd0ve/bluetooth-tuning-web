@@ -526,6 +526,17 @@ function App() {
   const aimTimerRef = useRef(null);
   const aimSeqRef = useRef(0);
   const aimSendingRef = useRef(false);
+  const aimLastSentFrameRef = useRef(null);
+  const aimFieldsRef = useRef(null);
+
+  useEffect(() => {
+    aimFieldsRef.current = {
+      rect_x: aimRectX, rect_y: aimRectY,
+      laser_x: aimLaserX, laser_y: aimLaserY,
+      valid_flags: aimFlags, tracking_state: aimState,
+    };
+  }, [aimRectX, aimRectY, aimLaserX, aimLaserY, aimFlags, aimState]);
+
   const [settingsExpanded, setSettingsExpanded] = useState(false);
   const [connectionState, setConnectionState] = useState('idle');
   const [disconnectReason, setDisconnectReason] = useState('');
@@ -1064,6 +1075,11 @@ function App() {
   };
 
   const sendRaw = async (value, mode = txMode, silent = false) => {
+    if (protocolModeRef.current !== 'generic' && (
+      mode === 'text' || typeof value === 'string'
+    )) {
+      return { ok: false, error: new Error('视觉模式下禁止发送 ASCII 文本') };
+    }
     try {
       if (mode === 'hex') {
         const cleaned = String(value || '').replace(/\s/g, '');
@@ -1095,6 +1111,7 @@ function App() {
   };
 
   const sendPacket = async (parts, silent = false) => {
+    if (protocolModeRef.current !== 'generic') return;
     const nowTime = Date.now();
     const wait = Math.max(0, Number(packetInterval) || 0) - (nowTime - packetTimer.current);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
@@ -1110,6 +1127,7 @@ function App() {
   }
 
   const emergencyStop = async () => {
+    if (protocolModeRef.current !== 'generic') return;
     setEmergencyAt(Date.now());
     setLeftJoy({ x: 0, y: 0 });
     setRightJoy({ x: 0, y: 0 });
@@ -1975,6 +1993,8 @@ function App() {
       setAimSendCount((c) => c + 1);
       setAimLastFrameHex(bytesToHex(frame));
       setAimLastFrameInfo({ time: new Date().toLocaleTimeString(), seq, ts, ...fields, crc: bytesToHex(frame.subarray(20, 22)) });
+      aimLastSentFrameRef.current = new Uint8Array(frame);
+      aimFieldsRef.current = fields;
       return { ok: true };
     } catch (err) {
       setAimFailCount((c) => c + 1);
@@ -2039,15 +2059,15 @@ function App() {
   };
 
   const sendFaultDupSeq = async () => {
-    const seq = aimSeqRef.current;
-    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: seq, timestamp: Math.floor(performance.now()) >>> 0 });
-    try { await writeBytes(frame); setAimFaultMsg(`已发送：重复 sequence=${seq}`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+    const lastFrame = aimLastSentFrameRef.current;
+    if (!lastFrame) { setAimFaultMsg('尚未成功发送过正常帧，无法重复'); return; }
+    try { await writeBytes(lastFrame); setAimFaultMsg('已发送：重复上一帧完整内容'); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
   };
 
   const sendFaultSkipSeq = async (skip = 5) => {
     const seq = (aimSeqRef.current + skip) & 0xFFFF;
     const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: seq, timestamp: Math.floor(performance.now()) >>> 0 });
-    try { await writeBytes(frame); setAimFaultMsg(`已发送：跳号 sequence=${seq} (跳过 ${skip})`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+    try { await writeBytes(frame); aimSeqRef.current = (seq + 1) & 0xFFFF; setAimSequence(aimSeqRef.current); setAimFaultMsg(`已发送：跳号 sequence=${seq} (跳过 ${skip})`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
   };
 
   const sendFaultGarbage = async (count = 4) => {
@@ -2226,7 +2246,7 @@ function App() {
         </Card>
       </div>
     );
-  }; () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
+  }; const renderSliders = () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
 
   const renderRecords = () => <div className="stack"><Card><SectionTitle icon={Save} title="数据记录" right={<div className="row"><Button variant={recording ? 'danger' : 'primary'} onClick={recording ? stopRecord : startRecord}>{recording ? <StopCircle size={16} /> : <Play size={16} />}{recording ? '停止并保存' : '开始记录'}</Button></div>} /><MiniInput label="记录名称" value={recordName} onChange={setRecordName} /><p>记录时不会改变协议，只保存网页收到的 [plot,...] 数据。可用于不同运行状态的曲线对比。</p></Card><Card><SectionTitle icon={RefreshCw} title="历史记录回放" /><div className="group-list">{records.map((rec) => <div className="group-row" key={rec.id}><span><b>{rec.name}</b><em>{new Date(rec.createdAt).toLocaleString()} · {rec.rows?.length || 0} 点</em></span><Button onClick={() => replayRecord(rec)}>回放</Button><Button onClick={() => exportPlotCsv(rec.rows || [], Object.keys(rec.rows?.[0] || {}).filter((k) => k.startsWith('CH')), rec.curveNames || {})}><Download size={14} /></Button><Button onClick={() => setRecords(records.filter((r) => r.id !== rec.id))}><Trash2 size={14} /></Button></div>)}</div></Card></div>;
 
