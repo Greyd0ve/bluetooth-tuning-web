@@ -1230,3 +1230,215 @@ textarea {
     grid-template-columns: 72px 54px minmax(0, 1fr);
   }
 }
+
+/* v16 aim visual protocol simulator */
+.aim-protocol-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.aim-protocol-card .aim-connection-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.aim-mode-label {
+  color: var(--app-muted, #8da1af);
+  font-size: 13px;
+}
+
+.aim-send-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.aim-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.aim-field-grid label {
+  margin: 0;
+}
+
+.aim-flags-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.aim-flags-grid label.check {
+  padding: 6px 8px;
+  border: 1px solid var(--app-border, #243241);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--app-input, #0c1219) 74%, var(--app-card, #101821));
+}
+
+.aim-state-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.aim-state-row label {
+  margin: 0;
+  min-width: 180px;
+}
+
+.aim-flags-hex-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aim-flags-hex-row span {
+  color: var(--app-muted, #8da1af);
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.aim-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.aim-control-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.aim-freq-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aim-freq-row span {
+  color: var(--app-muted, #8da1af);
+  font-size: 13px;
+  margin-right: 4px;
+}
+
+.aim-custom-freq {
+  width: 80px !important;
+  margin-top: 0 !important;
+}
+
+.aim-fault-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.aim-fault-grid .btn.danger {
+  min-height: 38px;
+  font-size: 12px;
+}
+
+.aim-error-card {
+  border-color: var(--app-danger, #dc2626) !important;
+  background: color-mix(in srgb, var(--app-danger, #dc2626) 8%, var(--app-card, #101821)) !important;
+}
+
+.aim-error-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aim-error-item {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--app-danger, #dc2626) 40%, var(--app-border, #243241));
+  border-radius: 6px;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--app-danger, #dc2626) 5%, var(--app-card, #101821));
+}
+
+.aim-fault-msg {
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--app-danger, #dc2626) 40%, var(--app-border, #243241));
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--app-danger, #dc2626) 8%, var(--app-card, #101821));
+}
+
+.aim-last-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aim-frame-hex {
+  padding: 10px 12px;
+  border: 1px solid var(--app-border, #243241);
+  border-radius: 6px;
+  background: #05080d;
+  color: #67e8f9;
+  word-break: break-all;
+  line-height: 1.6;
+  font-size: 12px;
+}
+
+.aim-frame-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px;
+}
+
+.aim-frame-info span {
+  display: block;
+  padding: 5px 8px;
+  border: 1px solid var(--app-border, #243241);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--app-input, #0c1219) 74%, var(--app-card, #101821));
+  color: var(--app-muted, #8da1af);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.aim-frame-info span:nth-child(9) {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .aim-send-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .aim-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .aim-flags-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .aim-state-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .aim-state-row label {
+    min-width: 0;
+  }
+
+  .aim-fault-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .aim-frame-info {
+    grid-template-columns: 1fr;
+  }
+}

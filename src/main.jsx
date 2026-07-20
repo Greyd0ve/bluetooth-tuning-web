@@ -7,6 +7,7 @@ import {
   BookOpen,
   Cable,
   Car,
+  Crosshair,
   Download,
   FileDown,
   FileUp,
@@ -28,6 +29,7 @@ import {
   StopCircle,
   Trash2,
   Usb,
+  Zap,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import './styles.css';
@@ -43,6 +45,18 @@ import {
 } from './utils/protocol.js';
 import { downloadTextFile, exportPlotCsv } from './utils/csv.js';
 import { loadJson, saveJson } from './utils/storage.js';
+import {
+  AIM_FRAME_SIZE,
+  AIM_COORD_INVALID,
+  AimTrackingState,
+  AimTrackingStateNames,
+  AimValidFlags,
+  buildAimVisionFrame,
+  crc16CcittFalse,
+  crc16CcittSelfTest,
+  decodeAimVisionFrame,
+  validateAimVisionFields,
+} from './utils/aimProtocol.js';
 
 const CONFIG_KEY = 'bluetooth_tuning_web_config_v15';
 const RECORD_KEY = 'bluetooth_tuning_web_records_v9';
@@ -185,6 +199,7 @@ const DEFAULT_CONFIG = {
   txText: 'Hello',
   tab: 'workspace',
   loopback: false,
+  protocolMode: 'generic',
   joystick: DEFAULT_JOYSTICK,
   plot: DEFAULT_PLOT,
   curveNames: { CH1: 'target', CH2: 'current', CH3: 'error', CH4: 'pwm' },
@@ -491,6 +506,26 @@ function App() {
   const [keyboardVector, setKeyboardVector] = useState({ x: 0, y: 0, active: false });
   const [recording, setRecording] = useState(false);
   const [recordName, setRecordName] = useState('速度阶跃测试');
+  const [protocolMode, setProtocolMode] = useState(saved.protocolMode || 'generic');
+  const [aimRectX, setAimRectX] = useState(400);
+  const [aimRectY, setAimRectY] = useState(240);
+  const [aimLaserX, setAimLaserX] = useState(320);
+  const [aimLaserY, setAimLaserY] = useState(240);
+  const [aimFlags, setAimFlags] = useState(0x0F);
+  const [aimState, setAimState] = useState(AimTrackingState.TRACKING);
+  const [aimFreq, setAimFreq] = useState(10);
+  const [aimCustomFreq, setAimCustomFreq] = useState('10');
+  const [aimRunning, setAimRunning] = useState(false);
+  const [aimSequence, setAimSequence] = useState(0);
+  const [aimLastFrameHex, setAimLastFrameHex] = useState('');
+  const [aimLastFrameInfo, setAimLastFrameInfo] = useState(null);
+  const [aimSendCount, setAimSendCount] = useState(0);
+  const [aimFailCount, setAimFailCount] = useState(0);
+  const [aimFieldErrors, setAimFieldErrors] = useState([]);
+  const [aimFaultMsg, setAimFaultMsg] = useState('');
+  const aimTimerRef = useRef(null);
+  const aimSeqRef = useRef(0);
+  const aimSendingRef = useRef(false);
   const [settingsExpanded, setSettingsExpanded] = useState(false);
   const [connectionState, setConnectionState] = useState('idle');
   const [disconnectReason, setDisconnectReason] = useState('');
@@ -522,11 +557,21 @@ function App() {
   const keysDown = useRef(new Set());
   const rxModeRef = useRef(rxMode);
   const encodingRef = useRef(encoding);
+  const protocolModeRef = useRef(protocolMode);
   const plotPausedRef = useRef(plotSettings.paused);
   const recordingRef = useRef(recording);
 
   useEffect(() => { rxModeRef.current = rxMode; }, [rxMode]);
   useEffect(() => { encodingRef.current = encoding; }, [encoding]);
+  useEffect(() => { protocolModeRef.current = protocolMode; }, [protocolMode]);
+  useEffect(() => {
+    if (protocolMode === 'aim-binary') {
+      if (rxMode !== 'hex') setRxMode('hex');
+    } else {
+      stopAimPeriodic();
+      setAimRunning(false);
+    }
+  }, [protocolMode, rxMode]);
   useEffect(() => { plotPausedRef.current = plotSettings.paused; }, [plotSettings.paused]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
   useInterval(() => setNow(Date.now()), 1000);
@@ -561,11 +606,11 @@ function App() {
   useEffect(() => {
     saveJson(CONFIG_KEY, {
       transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket,
-      sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback,
+      sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, protocolMode,
       joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme,
       buttons, sliders, pid, lastSentPid, pidGroups, serial: serialSettings, bridge: bridgeSettings,
     });
-  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serialSettings, bridgeSettings]);
+  }, [transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, protocolMode, joystickConfig, plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serialSettings, bridgeSettings]);
 
   useEffect(() => { saveJson(RECORD_KEY, { records }); }, [records]);
 
@@ -793,7 +838,7 @@ function App() {
         setDisconnectReason(`${device.name || '未知设备'} 已断开`);
         setStatus(`已断开：${device.name || '未知设备'}`);
         appendTx(`BLE 已断开：${device.name || '未知设备'}`, 'SYSTEM');
-        if (!intentionallyDisconnected.current) await safeStop();
+        if (!intentionallyDisconnected.current && protocolModeRef.current === 'generic') await safeStop();
         if (autoReconnect && !intentionallyDisconnected.current) {
           setConnectionState('connecting');
           setStatus(`已断开，3 秒后尝试重连：${device.name || '未知设备'}`);
@@ -946,7 +991,7 @@ function App() {
         setConnectedAt(null);
         setConnectionState('idle');
         setDisconnectReason('Orange Pi Bridge 已断开');
-        if (!intentionallyDisconnected.current) safeStop().catch(() => {});
+        if (!intentionallyDisconnected.current && protocolModeRef.current === 'generic') safeStop().catch(() => {});
         setStatus('本地桥已断开');
         appendTx('Orange Pi Bridge 已断开', intentionallyDisconnected.current ? 'SYSTEM' : 'WARN');
       };
@@ -966,7 +1011,9 @@ function App() {
 
   const disconnect = async () => {
     intentionallyDisconnected.current = true;
-    await safeStop();
+    if (aimTimerRef.current) { clearInterval(aimTimerRef.current); aimTimerRef.current = null; }
+    setAimRunning(false);
+    if (protocolModeRef.current === 'generic') await safeStop();
     try {
       const { device, notifyChar } = bluetoothRef.current;
       notifyChar?.removeEventListener('characteristicvaluechanged', onNotify);
@@ -1018,6 +1065,19 @@ function App() {
 
   const sendRaw = async (value, mode = txMode, silent = false) => {
     try {
+      if (mode === 'hex') {
+        const cleaned = String(value || '').replace(/\s/g, '');
+        if (cleaned.length % 2 !== 0) {
+          const errMsg = `HEX 长度必须为偶数，当前 ${cleaned.length} 个字符（含 ${cleaned.length / 2} 完整 + 1 半字节）`;
+          appendTx(errMsg, 'ERROR');
+          return { ok: false, error: new Error(errMsg) };
+        }
+        if (!/^[0-9a-fA-F]*$/.test(cleaned)) {
+          const errMsg = 'HEX 包含非法字符，仅支持 0-9、A-F';
+          appendTx(errMsg, 'ERROR');
+          return { ok: false, error: new Error(errMsg) };
+        }
+      }
       const bytes = mode === 'hex' ? hexToBytes(value) : textToBytes(value, encoding);
       await writeBytes(bytes);
       setLastTxAt(Date.now());
@@ -1044,6 +1104,7 @@ function App() {
   };
 
   async function safeStop() {
+    if (protocolModeRef.current !== 'generic') return;
     if (!connected) return;
     await sendPacket(['joystick', 0, 0, 0, 0], true);
   }
@@ -1058,8 +1119,8 @@ function App() {
   };
 
   useEffect(() => {
-    const onBeforeUnload = () => { safeStop(); };
-    const onVisibility = () => { if (document.hidden) safeStop(); };
+    const onBeforeUnload = () => { if (protocolModeRef.current === 'generic') safeStop(); };
+    const onVisibility = () => { if (document.hidden && protocolModeRef.current === 'generic') safeStop(); };
     window.addEventListener('beforeunload', onBeforeUnload);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
@@ -1069,6 +1130,7 @@ function App() {
   }, []);
 
   useInterval(() => {
+    if (protocolModeRef.current !== 'generic') return;
     if (!connected) return;
     const active = joyActive || keyboardVector.active || tab === 'remote';
     if (!active) return;
@@ -1077,6 +1139,7 @@ function App() {
   }, Math.max(20, Number(packetInterval) || 50));
 
   useEffect(() => {
+    if (protocolModeRef.current !== 'generic') return;
     if (!joyActive && !keyboardVector.active) safeStop();
   }, [joyActive, keyboardVector.active]);
 
@@ -1278,7 +1341,7 @@ function App() {
   };
 
   const exportConfig = () => {
-    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serial: serialSettings, bridge: bridgeSettings };
+    const config = { transport, autoReconnect, preset, uuids, encoding, newline, packetNewline, shortPacket, sendInterval, packetInterval, cacheSize, rxMode, txMode, txText, tab, loopback, protocolMode, joystick: joystickConfig, plot: plotSettings, curveNames, curveVisible, theme, buttons, sliders, pid, lastSentPid, pidGroups, serial: serialSettings, bridge: bridgeSettings };
     downloadTextFile(`bluetooth_tuning_config_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2), 'application/json;charset=utf-8');
   };
   const importConfig = async (file) => {
@@ -1287,7 +1350,7 @@ function App() {
       const text = await file.text();
       const cfg = { ...DEFAULT_CONFIG, ...JSON.parse(text) };
       const nextPid = { ...DEFAULT_PID, ...(cfg.pid || {}) };
-      setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid(nextPid); setLastSentPid({ ...nextPid, ...(cfg.lastSentPid || {}) }); setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key] ?? 0)]))); setPidErrors({}); setPendingPidKeys(new Set()); setPidGroups(cfg.pidGroups || []); setSerialSettings({ ...DEFAULT_SERIAL, ...(cfg.serial || {}) }); setBridgeSettings({ ...DEFAULT_BRIDGE, ...(cfg.bridge || {}) });
+      setTransport(cfg.transport); setAutoReconnect(cfg.autoReconnect); setPreset(cfg.preset); setUuids(cfg.uuids); setEncoding(cfg.encoding); setNewline(cfg.newline); setPacketNewline(cfg.packetNewline); setShortPacket(cfg.shortPacket); setSendInterval(cfg.sendInterval); setPacketInterval(cfg.packetInterval); setCacheSize(cfg.cacheSize); setRxMode(cfg.rxMode); setTxMode(cfg.txMode); setTxText(cfg.txText); setTab(cfg.tab); setLoopback(cfg.loopback); setProtocolMode(cfg.protocolMode || 'generic'); setJoystickConfig(cfg.joystick); setPlotSettings(cfg.plot); setCurveNames(cfg.curveNames); setCurveVisible(cfg.curveVisible); setTheme(cfg.theme); setButtons(cfg.buttons); setSliders(cfg.sliders); setPid(nextPid); setLastSentPid({ ...nextPid, ...(cfg.lastSentPid || {}) }); setPidDrafts(Object.fromEntries(PID_FIELDS.map((field) => [field.key, String(nextPid[field.key] ?? 0)]))); setPidErrors({}); setPendingPidKeys(new Set()); setPidGroups(cfg.pidGroups || []); setSerialSettings({ ...DEFAULT_SERIAL, ...(cfg.serial || {}) }); setBridgeSettings({ ...DEFAULT_BRIDGE, ...(cfg.bridge || {}) });
       appendTx('配置已导入', 'SYSTEM');
     } catch (err) {
       appendTx(`配置导入失败：${err.message}`, 'ERROR');
@@ -1840,7 +1903,330 @@ function App() {
     </Card>
   );
 
-  const renderSliders = () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
+  const AIM_FREQ_OPTIONS = [1, 10, 20, 50, 60];
+  const aimMovingRef = useRef(0);
+
+  const aimGetEffectiveFreq = () => (aimFreq === 'custom' ? Math.min(100, Math.max(1, Number(aimCustomFreq) || 10)) : Number(aimFreq));
+
+  const aimCurrentFields = () => ({
+    rect_x: aimRectX,
+    rect_y: aimRectY,
+    laser_x: aimLaserX,
+    laser_y: aimLaserY,
+    valid_flags: aimFlags,
+    tracking_state: aimState,
+  });
+
+  const applyAimPreset = (name) => {
+    setAimFieldErrors([]);
+    setAimFaultMsg('');
+    const presets = {
+      TRACKING: { rect_x: 400, rect_y: 240, laser_x: 320, laser_y: 240, flags: 0x0F, state: AimTrackingState.TRACKING },
+      CENTERED: { rect_x: 320, rect_y: 240, laser_x: 320, laser_y: 240, flags: 0x0F, state: AimTrackingState.TRACKING },
+      LOST: { rect_x: 65535, rect_y: 65535, laser_x: 65535, laser_y: 65535, flags: 0x00, state: AimTrackingState.LOST },
+      ACQUIRING: { rect_x: 320, rect_y: 240, laser_x: 65535, laser_y: 65535, flags: AimValidFlags.RECT_VALID, state: AimTrackingState.ACQUIRING },
+      HOLD: { rect_x: 65535, rect_y: 65535, laser_x: 65535, laser_y: 65535, flags: 0x00, state: AimTrackingState.HOLD },
+      FAULT: { rect_x: 65535, rect_y: 65535, laser_x: 65535, laser_y: 65535, flags: 0x00, state: AimTrackingState.FAULT },
+      MOVING: { rect_x: 120, rect_y: 240, laser_x: 320, laser_y: 240, flags: 0x0F, state: AimTrackingState.TRACKING },
+    };
+    const p = presets[name];
+    if (!p) return;
+    setAimRectX(p.rect_x);
+    setAimRectY(p.rect_y);
+    setAimLaserX(p.laser_x);
+    setAimLaserY(p.laser_y);
+    setAimFlags(p.flags);
+    setAimState(p.state);
+    if (name === 'MOVING') aimMovingRef.current = 0;
+  };
+
+  const autoFillCoords = () => {
+    const rectValid = (aimFlags & AimValidFlags.RECT_VALID) !== 0;
+    const laserValid = (aimFlags & AimValidFlags.LASER_VALID) !== 0;
+    if (!rectValid) { setAimRectX(65535); setAimRectY(65535); }
+    if (!laserValid) { setAimLaserX(65535); setAimLaserY(65535); }
+  };
+
+  const doSendAimFrame = async (fieldsOverride) => {
+    if (protocolModeRef.current !== 'aim-binary') {
+      setAimFaultMsg('当前不在视觉协议模式');
+      return { ok: false, error: 'not aim mode' };
+    }
+    if (!connected) {
+      setAimFaultMsg('串口未连接，无法发送');
+      return { ok: false, error: 'not connected' };
+    }
+    const fields = fieldsOverride || aimCurrentFields();
+    const validation = validateAimVisionFields(fields);
+    if (!validation.valid) {
+      setAimFieldErrors(validation.errors);
+      setAimFaultMsg(validation.errors[0]);
+      return { ok: false, error: validation.errors.join('; ') };
+    }
+    setAimFieldErrors([]);
+    setAimFaultMsg('');
+    const seq = aimSeqRef.current;
+    const ts = Math.floor(performance.now()) >>> 0;
+    const frame = buildAimVisionFrame({ ...fields, sequence: seq, timestamp: ts });
+    try {
+      await writeBytes(frame);
+      aimSeqRef.current = (seq + 1) & 0xFFFF;
+      setAimSequence(aimSeqRef.current);
+      setAimSendCount((c) => c + 1);
+      setAimLastFrameHex(bytesToHex(frame));
+      setAimLastFrameInfo({ time: new Date().toLocaleTimeString(), seq, ts, ...fields, crc: bytesToHex(frame.subarray(20, 22)) });
+      return { ok: true };
+    } catch (err) {
+      setAimFailCount((c) => c + 1);
+      setAimFaultMsg(`发送失败：${err.message}`);
+      return { ok: false, error: err.message };
+    }
+  };
+
+  const startAimPeriodic = () => {
+    if (protocolModeRef.current !== 'aim-binary') { setAimFaultMsg('请先切换到视觉协议模式'); return; }
+    if (!connected) { setAimFaultMsg('串口未连接'); return; }
+    if (aimTimerRef.current) clearInterval(aimTimerRef.current);
+    setAimRunning(true);
+    const freq = aimGetEffectiveFreq();
+    const interval = Math.round(1000 / freq);
+
+    aimTimerRef.current = setInterval(() => {
+      if (aimSendingRef.current) return;
+      aimSendingRef.current = true;
+
+      let fields = aimCurrentFields();
+      const presetMoving = aimRectX === 120 || aimRectY === 240;
+      if (fields.tracking_state === AimTrackingState.TRACKING && (aimFlags & AimValidFlags.RECT_VALID)) {
+        aimMovingRef.current = (aimMovingRef.current + 1) % 100;
+        const phase = aimMovingRef.current / 100;
+        fields.rect_x = Math.round(120 + Math.sin(phase * Math.PI * 2) * 200);
+        fields.rect_x = Math.max(120, Math.min(520, fields.rect_x));
+        setAimRectX(fields.rect_x);
+      }
+
+      doSendAimFrame(fields).finally(() => {
+        aimSendingRef.current = false;
+      });
+    }, interval);
+  };
+
+  const stopAimPeriodic = () => {
+    if (aimTimerRef.current) { clearInterval(aimTimerRef.current); aimTimerRef.current = null; }
+    setAimRunning(false);
+    aimSendingRef.current = false;
+  };
+
+  const resetAimSeq = () => { aimSeqRef.current = 0; setAimSequence(0); aimMovingRef.current = 0; };
+
+  useInterval(() => {
+    if (!aimRunning) return;
+    if ((aimFlags & AimValidFlags.RECT_VALID) && aimState === AimTrackingState.TRACKING) {
+      const phase = (aimMovingRef.current + 1) / 100;
+      const x = Math.round(120 + 200 + Math.sin(phase * Math.PI * 2) * 200);
+      setAimRectX(Math.max(120, Math.min(520, x)));
+    }
+  }, null);
+
+  useEffect(() => {
+    return () => { if (aimTimerRef.current) clearInterval(aimTimerRef.current); };
+  }, []);
+
+  const sendFaultCrc = async () => {
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: aimSeqRef.current, timestamp: Math.floor(performance.now()) >>> 0 });
+    frame[20] ^= 0x01;
+    try { await writeBytes(frame); setAimFaultMsg('已发送：CRC 错误帧（翻转 CRC LSB）'); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultDupSeq = async () => {
+    const seq = aimSeqRef.current;
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: seq, timestamp: Math.floor(performance.now()) >>> 0 });
+    try { await writeBytes(frame); setAimFaultMsg(`已发送：重复 sequence=${seq}`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultSkipSeq = async (skip = 5) => {
+    const seq = (aimSeqRef.current + skip) & 0xFFFF;
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: seq, timestamp: Math.floor(performance.now()) >>> 0 });
+    try { await writeBytes(frame); setAimFaultMsg(`已发送：跳号 sequence=${seq} (跳过 ${skip})`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultGarbage = async (count = 4) => {
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: aimSeqRef.current, timestamp: Math.floor(performance.now()) >>> 0 });
+    const garbage = new Uint8Array(count + AIM_FRAME_SIZE);
+    for (let i = 0; i < count; i++) garbage[i] = Math.floor(Math.random() * 256);
+    garbage.set(frame, count);
+    try { await writeBytes(garbage); setAimFaultMsg(`已发送：垃圾前缀 ${count} 字节 + 正确帧`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultTruncate = async (n = 10) => {
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: aimSeqRef.current, timestamp: Math.floor(performance.now()) >>> 0 });
+    const truncated = frame.subarray(0, Math.min(n, AIM_FRAME_SIZE));
+    try { await writeBytes(truncated); setAimFaultMsg(`已发送：截断帧 ${truncated.length} 字节`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultInsert = async (pos = 10) => {
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: aimSeqRef.current, timestamp: Math.floor(performance.now()) >>> 0 });
+    const modified = new Uint8Array(AIM_FRAME_SIZE + 1);
+    modified.set(frame.subarray(0, pos), 0);
+    modified[pos] = 0xFF;
+    modified.set(frame.subarray(pos), pos + 1);
+    try { await writeBytes(modified); setAimFaultMsg(`已发送：字节插入 (位置 ${pos} 插入 0xFF)`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const sendFaultDelete = async (pos = 10) => {
+    const frame = buildAimVisionFrame({ ...aimCurrentFields(), sequence: aimSeqRef.current, timestamp: Math.floor(performance.now()) >>> 0 });
+    const modified = new Uint8Array(AIM_FRAME_SIZE - 1);
+    modified.set(frame.subarray(0, pos), 0);
+    modified.set(frame.subarray(pos + 1), pos);
+    try { await writeBytes(modified); setAimFaultMsg(`已发送：字节删除 (删除位置 ${pos})`); } catch (e) { setAimFaultMsg(`发送失败：${e.message}`); }
+  };
+
+  const renderAimProtocol = () => {
+    const aimSerialInfo = protocolMode === 'aim-binary'
+      ? (connected ? `${deviceName || ''} / 115200-8-N-1 / 视觉协议模式` : '视觉协议模式（未连接）')
+      : '当前为普通调参模式';
+
+    return (
+      <div className="aim-protocol-panel">
+        <Card className="aim-protocol-card">
+          <SectionTitle icon={Crosshair} title="视觉协议模拟器" right={
+            <div className="row">
+              <Button variant={protocolMode === 'aim-binary' ? 'primary' : 'secondary'} onClick={() => {
+                if (aimRunning) stopAimPeriodic();
+                setProtocolMode(protocolMode === 'aim-binary' ? 'generic' : 'aim-binary');
+              }}>
+                <Zap size={14} />{protocolMode === 'aim-binary' ? '视觉模式（启用中）' : '开启视觉协议模式'}
+              </Button>
+            </div>
+          } />
+          <div className="aim-connection-info">
+            <span className={`status-pill tiny ${connected ? 'ok' : 'bad'}`}>{connected ? '串口已连接' : '未连接'}</span>
+            <span className="aim-mode-label">{protocolMode === 'aim-binary' ? 'MSPM0G3507 UART0 ← K230 视觉模拟' : '标准 ASCII 调参模式'}</span>
+            {protocolMode === 'aim-binary' && <p className="hint">视觉模式下不会发送任何 ASCII 控制命令（joystick/key/slider 等），断开连接时不发送 safeStop。</p>}
+          </div>
+        </Card>
+
+        <div className="aim-send-grid">
+          <Card>
+            <SectionTitle icon={Crosshair} title="协议字段" right={
+              <div className="row"><span className="hint">{AIM_FRAME_SIZE} 字节二进制帧</span></div>
+            } />
+            <div className="aim-field-grid">
+              <label>rect_x <input type="number" value={aimRectX} onChange={(e) => setAimRectX(Number(e.target.value))} min={0} max={65535} /></label>
+              <label>rect_y <input type="number" value={aimRectY} onChange={(e) => setAimRectY(Number(e.target.value))} min={0} max={65535} /></label>
+              <label>laser_x <input type="number" value={aimLaserX} onChange={(e) => setAimLaserX(Number(e.target.value))} min={0} max={65535} /></label>
+              <label>laser_y <input type="number" value={aimLaserY} onChange={(e) => setAimLaserY(Number(e.target.value))} min={0} max={65535} /></label>
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle icon={Settings} title="Flags & State" />
+            <div className="aim-flags-grid">
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.RECT_VALID) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.RECT_VALID)} />RECT_VALID (bit0)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.LASER_VALID) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.LASER_VALID)} />LASER_VALID (bit1)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.TARGET_LOCKED) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.TARGET_LOCKED)} />TARGET_LOCKED (bit2)</label>
+              <label className="check"><input type="checkbox" checked={(aimFlags & AimValidFlags.MEASUREMENT_FRESH) !== 0} onChange={() => setAimFlags(aimFlags ^ AimValidFlags.MEASUREMENT_FRESH)} />MEASUREMENT_FRESH (bit3)</label>
+            </div>
+            <div className="aim-state-row">
+              <label>tracking_state
+                <select value={aimState} onChange={(e) => setAimState(Number(e.target.value))}>
+                  {Object.entries(AimTrackingStateNames).map(([k, v]) => <option key={k} value={k}>{`${k} ${v}`}</option>)}
+                </select>
+              </label>
+              <div className="aim-flags-hex-row">
+                <span>flags: 0x{aimFlags.toString(16).toUpperCase().padStart(2, '0')}</span>
+                <Button onClick={autoFillCoords}>按 flags 自动填充无效坐标</Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        <Card>
+          <SectionTitle icon={Play} title="预设场景" />
+          <div className="aim-preset-grid">
+            {['TRACKING', 'CENTERED', 'LOST', 'ACQUIRING', 'HOLD', 'FAULT', 'MOVING'].map((name) => (
+              <Button key={name} onClick={() => applyAimPreset(name)}>{name}</Button>
+            ))}
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={Send} title="发送控制" right={
+            <div className="row">
+              <span className="hint">sequence: {aimSequence}</span>
+              <span className="hint">发送: {aimSendCount} 成功 / {aimFailCount} 失败</span>
+            </div>
+          } />
+          <div className="aim-control-row">
+            <Button variant="primary" onClick={doSendAimFrame} disabled={!connected}><Send size={14} />发送单帧</Button>
+            <Button variant={aimRunning ? 'danger' : 'primary'} onClick={aimRunning ? stopAimPeriodic : startAimPeriodic} disabled={!connected}>
+              {aimRunning ? <StopCircle size={14} /> : <Play size={14} />}{aimRunning ? '停止周期发送' : '开始周期发送'}
+            </Button>
+            <Button onClick={resetAimSeq}><RotateCcw size={14} />sequence 清零</Button>
+          </div>
+          <div className="aim-freq-row">
+            <span>频率：</span>
+            {AIM_FREQ_OPTIONS.map((f) => (
+              <Button key={f} variant={aimFreq === f ? 'primary' : 'secondary'} onClick={() => setAimFreq(f)}>{f} Hz</Button>
+            ))}
+            <Button variant={aimFreq === 'custom' ? 'primary' : 'secondary'} onClick={() => setAimFreq('custom')}>自定义</Button>
+            {aimFreq === 'custom' && <input type="number" className="aim-custom-freq" value={aimCustomFreq} onChange={(e) => setAimCustomFreq(e.target.value)} min={1} max={100} />}
+          </div>
+        </Card>
+
+        <Card>
+          <SectionTitle icon={AlertTriangle} title="故障注入（独立测试按钮）" right={<span className="danger-text">仅主动点击发送</span>} />
+          <div className="aim-fault-grid">
+            <Button variant="danger" onClick={sendFaultCrc}>错误 CRC（翻转 LSB）</Button>
+            <Button variant="danger" onClick={sendFaultDupSeq}>重复 sequence</Button>
+            <Button variant="danger" onClick={() => sendFaultSkipSeq(5)}>sequence 跳号 (+5)</Button>
+            <Button variant="danger" onClick={() => sendFaultGarbage(4)}>垃圾前缀 (4B)</Button>
+            <Button variant="danger" onClick={() => sendFaultTruncate(10)}>截断帧 (前10B)</Button>
+            <Button variant="danger" onClick={() => sendFaultInsert(10)}>字节插入 (位置10)</Button>
+            <Button variant="danger" onClick={() => sendFaultDelete(10)}>字节删除 (位置10)</Button>
+          </div>
+        </Card>
+
+        {aimFieldErrors.length > 0 && (
+          <Card className="aim-error-card">
+            <SectionTitle icon={AlertTriangle} title="字段一致性错误" />
+            <div className="aim-error-list">
+              {aimFieldErrors.map((e, i) => <div key={i} className="aim-error-item danger-text">{e}</div>)}
+            </div>
+          </Card>
+        )}
+
+        {aimFaultMsg && (
+          <div className="aim-fault-msg danger-text">
+            {aimFaultMsg}
+          </div>
+        )}
+
+        <Card>
+          <SectionTitle icon={Monitor} title="最新发送帧" />
+          {aimLastFrameHex ? (
+            <div className="aim-last-frame">
+              <div className="aim-frame-hex mono">{aimLastFrameHex}</div>
+              {aimLastFrameInfo && (
+                <div className="aim-frame-info">
+                  <span>时间 {aimLastFrameInfo.time}</span>
+                  <span>seq {aimLastFrameInfo.seq}</span>
+                  <span>ts {aimLastFrameInfo.ts}</span>
+                  <span>rect ({aimLastFrameInfo.rect_x},{aimLastFrameInfo.rect_y})</span>
+                  <span>laser ({aimLastFrameInfo.laser_x},{aimLastFrameInfo.laser_y})</span>
+                  <span>flags 0x{aimLastFrameInfo.valid_flags.toString(16).toUpperCase().padStart(2, '0')}</span>
+                  <span>state {AimTrackingStateNames[aimLastFrameInfo.tracking_state] || aimLastFrameInfo.tracking_state}</span>
+                  <span>CRC {aimLastFrameInfo.crc}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="hint">尚未发送帧</p>
+          )}
+        </Card>
+      </div>
+    );
+  }; () => <Card><SectionTitle icon={SlidersHorizontal} title="滑杆" right={<Button onClick={() => setSliders([...sliders, { name: String(sliders.length + 1), min: 0, max: 100, step: 1, value: 50 }])}>增加</Button>} /><div className="stack">{sliders.map((s, idx) => <div className="slider-row" key={idx}><div className="grid5"><input value={s.name} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} /><input type="number" value={s.min} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, min: Number(e.target.value) } : x))} /><input type="number" value={s.max} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, max: Number(e.target.value) } : x))} /><input type="number" value={s.step} onChange={(e) => setSliders(sliders.map((x, i) => i === idx ? { ...x, step: Number(e.target.value) } : x))} /><div className="value-box">{s.value}</div></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.value} onChange={(e) => { const value = Number(e.target.value); setSliders(sliders.map((x, i) => i === idx ? { ...x, value } : x)); sendPacket(['slider', s.name, value]); }} /></div>)}</div></Card>;
 
   const renderRecords = () => <div className="stack"><Card><SectionTitle icon={Save} title="数据记录" right={<div className="row"><Button variant={recording ? 'danger' : 'primary'} onClick={recording ? stopRecord : startRecord}>{recording ? <StopCircle size={16} /> : <Play size={16} />}{recording ? '停止并保存' : '开始记录'}</Button></div>} /><MiniInput label="记录名称" value={recordName} onChange={setRecordName} /><p>记录时不会改变协议，只保存网页收到的 [plot,...] 数据。可用于不同运行状态的曲线对比。</p></Card><Card><SectionTitle icon={RefreshCw} title="历史记录回放" /><div className="group-list">{records.map((rec) => <div className="group-row" key={rec.id}><span><b>{rec.name}</b><em>{new Date(rec.createdAt).toLocaleString()} · {rec.rows?.length || 0} 点</em></span><Button onClick={() => replayRecord(rec)}>回放</Button><Button onClick={() => exportPlotCsv(rec.rows || [], Object.keys(rec.rows?.[0] || {}).filter((k) => k.startsWith('CH')), rec.curveNames || {})}><Download size={14} /></Button><Button onClick={() => setRecords(records.filter((r) => r.id !== rec.id))}><Trash2 size={14} /></Button></div>)}</div></Card></div>;
 
@@ -1849,6 +2235,7 @@ function App() {
   const renderTools = () => {
     const tools = [
       ['serial', Cable, '完整串口'],
+      ['aim', Crosshair, '视觉协议'],
       ['plot', Activity, '曲线完整版'],
       ['display', Monitor, '显示屏'],
       ['buttons', SquareMousePointer, '按键'],
@@ -1857,6 +2244,7 @@ function App() {
       ['theme', Palette, '外观/说明'],
     ];
     const toolContent = toolTab === 'serial' ? renderSerial()
+      : toolTab === 'aim' ? renderAimProtocol()
       : toolTab === 'plot' ? renderPlotPanel(false)
       : toolTab === 'display' ? renderDisplay()
       : toolTab === 'buttons' ? renderButtons()
